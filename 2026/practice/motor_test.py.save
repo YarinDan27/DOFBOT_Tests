@@ -1,0 +1,302 @@
+#!/usr/bin/env python3import time
+from Arm_Lib import Arm_Device
+
+print("Initializing arm...")
+arm = Arm_Device()
+time.sleep(1)
+
+print("Testing servo 1 (base) - moving to 45 degrees")
+arm.Arm_serial_servo_write(1, 45, 1000)
+time.sleep(2)
+
+print("Moving to 135 degrees")
+arm.Arm_serial_servo_write(1, 135, 1000)
+time.sleep(2)
+
+print("Returning to center (90 degrees)")
+arm.Arm_serial_servo_write(1, 90, 1000)
+time.sleep(2)
+
+print("Test complete!")#!/usr/bin/env python3
+import time
+import sys
+
+# TODO: Add your arm import here (we'll check your 2025 scripts)
+# from Arm_Lib import Arm_Device
+
+def test_motors():
+    """Interactive motor testing script"""
+    print("=== DOFBOT Motor & Claw Test ===")
+    
+    # Initialize arm (syntax depends on your library)
+    # arm = Arm_Device()
+    
+    while True:
+        print("\nOptions:")
+        print("1. Move to HOME position")
+        print("2. Test individual servo")
+        print("3. Open claw")
+        print("4. Close claw")
+        print("5. Sweep base left/right")
+        print("q. Quit")
+        
+        choice = input("\nEnter choice: ").strip()
+        
+        if choice == 'q':
+            print("Exiting...")
+            break
+        elif choice == '1':
+            print("Moving to HOME...")
+            # arm.Arm_serial_servo_write6(90, 90, 90, 90, 90, 90, 1000)
+        elif choice == '2':
+            servo = int(input("Servo number (1-6): "))
+            angle = int(input("Angle (0-180): "))
+            # arm.Arm_serial_servo_write(servo, angle, 500)
+        elif choice == '3':
+            print("Opening claw...")
+            # arm.Arm_serial_servo_write(6, 0, 400)
+        elif choice == '4':
+            print("Closing claw...")
+            # arm.Arm_serial_servo_write(6, 120, 400)
+        elif choice == '5':
+            print("Sweeping base...")
+            # for angle in range(45, 135, 5):
+            #     arm.Arm_serial_servo_write(1, angle, 600)
+            #     time.sleep(0.1)
+
+if __name__ == "__main__":
+    test_motors()
+#!/usr/bin/env python3
+"""
+DOFBOT Interactive Motor & Claw Test Script
+Simple interface to test all motors and gripper
+"""
+
+import time
+import sys
+
+try:
+    from Arm_Lib import Arm_Device
+    ARM_LIB_AVAILABLE = True
+except ImportError:
+    print("ERROR: Arm_Lib not found!")
+    print("Make sure you're running on the DOFBOT/Jetson system.")
+    sys.exit(1)
+
+class MotorTester:
+    def __init__(self):
+        """Initialize the arm"""
+        print("Initializing DOFBOT arm...")
+        self.arm = Arm_Device()
+        time.sleep(1)
+        
+        # Motor mapping
+        self.motors = {
+            '1': 'base',
+            '2': 'shoulder', 
+            '3': 'elbow',
+            '4': 'wrist_pitch',
+            '5': 'wrist_roll',
+            '6': 'gripper'
+        }
+        
+        print("Arm initialized successfully!")
+        
+    def move_servo(self, servo_id, angle, speed=1000):
+        """Move a single servo"""
+        print(f"Moving servo {servo_id} to {angle}° at speed {speed}ms")
+        self.arm.Arm_serial_servo_write(servo_id, angle, speed)
+        
+    def home_position(self):
+        """Move all servos to center position"""
+        print("Moving to HOME position (all servos to 90°)...")
+        for i in range(1, 7):
+            self.arm.Arm_serial_servo_write(i, 90, 1000)
+        time.sleep(1)
+        print("HOME position complete!")
+        
+    def test_gripper(self):
+        """Test gripper open/close"""
+        print("\n=== Testing Gripper ===")
+        print("Opening gripper...")
+        self.arm.Arm_serial_servo_write(6, 60, 500)
+        time.sleep(1)
+        
+        print("Closing gripper...")
+        self.arm.Arm_serial_servo_write(6, 120, 500)
+        time.sleep(1)
+        
+        print("Returning to neutral...")
+        self.arm.Arm_serial_servo_write(6, 90, 500)
+        time.sleep(1)
+        print("Gripper test complete!")
+        
+    def sweep_base(self):
+        """Sweep base left and right"""
+        print("\n=== Sweeping Base ===")
+        print("Sweeping left...")
+        self.arm.Arm_serial_servo_write(1, 45, 1000)
+        time.sleep(1.5)
+        
+        print("Sweeping right...")
+        self.arm.Arm_serial_servo_write(1, 135, 1000)
+        time.sleep(1.5)
+        
+        print("Returning to center...")
+        self.arm.Arm_serial_servo_write(1, 90, 1000)
+        time.sleep(1.5)
+        print("Base sweep complete!")
+        
+    def test_all_servos(self):
+        """Test each servo individually"""
+        print("\n=== Testing All Servos ===")
+        for i in range(1, 7):
+            motor_name = self.motors[str(i)]
+            print(f"\nTesting Servo {i} ({motor_name})...")
+            
+            # Move to 60 degrees
+            print(f"  Moving to 60°...")
+            self.arm.Arm_serial_servo_write(i, 60, 800)
+            time.sleep(1.5)
+            
+            # Move to 120 degrees
+            print(f"  Moving to 120°...")
+            self.arm.Arm_serial_servo_write(i, 120, 800)
+            time.sleep(1.5)
+            
+            # Return to 90
+            print(f"  Returning to 90°...")
+            self.arm.Arm_serial_servo_write(i, 90, 800)
+            time.sleep(1.5)
+            
+        print("\nAll servo tests complete!")
+        
+    def wave(self):
+        """Simple wave motion"""
+        print("\n=== Wave Sequence ===")
+        
+        # Position for waving
+        print("Moving to wave position...")
+        self.arm.Arm_serial_servo_write(1, 45, 1000)   # Base left
+        self.arm.Arm_serial_servo_write(2, 60, 1000)   # Shoulder up
+        self.arm.Arm_serial_servo_write(3, 60, 1000)   # Elbow bent
+        time.sleep(2)
+        
+        # Wave motion
+        print("Waving...")
+        for i in range(3):
+            self.arm.Arm_serial_servo_write(4, 60, 400)   # Wrist up
+            time.sleep(0.5)
+            self.arm.Arm_serial_servo_write(4, 120, 400)  # Wrist down
+            time.sleep(0.5)
+            
+        # Return to neutral
+        print("Returning to home...")
+        self.home_position()
+        print("Wave complete!")
+        
+    def interactive_menu(self):
+        """Main interactive menu"""
+        print("\n" + "="*50)
+        print("DOFBOT Motor & Claw Test - Interactive Menu")
+        print("="*50)
+        
+        while True:
+            print("\n--- Main Menu ---")
+            print("1. Move to HOME position (all servos to 90°)")
+            print("2. Test GRIPPER (open/close)")
+            print("3. Sweep BASE left/right")
+            print("4. Test ALL servos sequentially")
+            print("5. WAVE sequence")
+            print("6. Move INDIVIDUAL servo")
+            print("7. Quick GRIPPER open")
+            print("8. Quick GRIPPER close")
+            print("9. Emergency STOP (all to 90°)")
+            print("q. QUIT")
+            
+            choice = input("\nEnter choice: ").strip().lower()
+            
+            if choice == 'q':
+                print("Returning to home position before exit...")
+                self.home_position()
+                print("Exiting. Goodbye!")
+                break
+                
+            elif choice == '1':
+                self.home_position()
+                
+            elif choice == '2':
+                self.test_gripper()
+                
+            elif choice == '3':
+                self.sweep_base()
+                
+            elif choice == '4':
+                self.test_all_servos()
+                
+            elif choice == '5':
+                self.wave()
+                
+            elif choice == '6':
+                print("\nMotor IDs:")
+                for num, name in self.motors.items():
+                    print(f"  {num} = {name}")
+                    
+                try:
+                    servo = int(input("Enter servo ID (1-6): ").strip())
+                    if servo < 1 or servo > 6:
+                        print("Invalid servo ID!")
+                        continue
+                        
+                    angle = int(input("Enter angle (0-180): ").strip())
+                    if angle < 0 or angle > 180:
+                        print("Invalid angle!")
+                        continue
+                        
+                    speed = int(input("Enter speed in ms (200-2000, default 1000): ").strip() or "1000")
+                    
+                    self.move_servo(servo, angle, speed)
+                    time.sleep(speed / 1000 + 0.5)
+                    
+                except ValueError:
+                    print("Invalid input!")
+                    
+            elif choice == '7':
+                print("Opening gripper...")
+                self.arm.Arm_serial_servo_write(6, 60, 500)
+                time.sleep(1)
+                
+            elif choice == '8':
+                print("Closing gripper...")
+                self.arm.Arm_serial_servo_write(6, 120, 500)
+                time.sleep(1)
+                
+            elif choice == '9':
+                print("EMERGENCY STOP - All servos to 90°!")
+                self.home_position()
+                
+            else:
+                print("Invalid choice! Please try again.")
+
+def main():
+    """Main function"""
+    print("\n" + "="*50)
+    print("DOFBOT Motor & Claw Test Script")
+    print("="*50)
+    
+    try:
+        tester = MotorTester()
+        tester.interactive_menu()
+        
+    except KeyboardInterrupt:
+        print("\n\nInterrupted! Exiting safely...")
+        
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    print("\nProgram ended.")
+
+if __name__ == "__main__":
+    main()
