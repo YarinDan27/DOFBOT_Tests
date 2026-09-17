@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import pathlib
-
+VERSION = "1.0.1"
 # === PATHS ===
 HOME = pathlib.Path.home()
 WEIGHTS = HOME / "DOFBOT_Tests" / "weights" / "chess-model-yolov8m.pt"
