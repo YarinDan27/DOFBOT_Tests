@@ -1,228 +1,415 @@
 #!/usr/bin/env python3
+"""
+DOFBOT Chess.
+
+  1 Calibrate : teach it where the board is
+  2 Test      : prove it can reach and grab
+  3 Play      : move pieces
+  4 Camera    : live view on / off, and how fast it's actually running
+
+Nothing about the board is hardcoded -- calibration writes board_calibration.json.
+"""
 import sys
 import time
-import socket
-import tty
-import termios
 import select
+import termios
 import threading
+import tty
+
 import config
-from arm_control import ArmControl
-from board_mapper import BoardMapper
-from arm_kinematics import ArmKinematics
-from chess_engine import ChessEngineInterface
-from web_stream import WebStreamServer
+import chessboard
+import kinematics
+from arm import Arm, OutOfReach, UnsafeAngle
 
-def update_config_file(key, value):
-    config_path = "/home/jetson/YDscripts/chess_project/config.py"
-    try:
-        with open(config_path, "r") as f:
-            lines = f.readlines()
-        with open(config_path, "w") as f:
-            for line in lines:
-                if line.strip().startswith(key):
-                    f.write(f"{key} = {value}\n")
+try:
+    from camera import Camera
+except Exception as exc:          # opencv missing, camera busy, etc.
+    Camera = None
+    CAMERA_ERROR = str(exc)
+
+DEFAULT_CAL_SQUARES = ["a1", "h1", "a8"]
+
+
+# ============================ keyboard jogger ============================
+
+def jog(arm, start_angles, label, camera=None):
+    print(f"\nJog: {label}")
+    if camera is not None:
+        print(f"  live view: {camera.url()}")
+    print("  1/2 base   3/4 shoulder   5/6 elbow   7/8 servo4   9/0 wrist   -/= claw")
+    print("  [space] confirm    [x] cancel")
+
+    angles = dict(start_angles)
+    step_map = {
+        '1': (1, +2), '2': (1, -2),
+        '3': (2, +2), '4': (2, -2),
+        '5': (3, +2), '6': (3, -2),
+        '7': (4, +2), '8': (4, -2),
+        '9': (5, +2), '0': (5, -2),
+        '-': (6, +2), '=': (6, -2),
+    }
+    running = True
+    confirmed = False
+    pressed = None
+    lock = threading.Lock()
+
+    def reader():
+        nonlocal running, confirmed, pressed
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while running:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.01)
+                if ready:
+                    ch = sys.stdin.read(1)
+                    if ch == ' ':
+                        confirmed, running = True, False
+                    elif ch.lower() == 'x' or ch == '\x03':
+                        confirmed, running = False, False
+                    else:
+                        with lock:
+                            pressed = ch
                 else:
-                    f.write(line)
-        print(f"[Config] Saved {key} to disk.")
-    except Exception as e:
-        print(f"[Config] Failed to save {key}: {e}")
+                    with lock:
+                        pressed = None
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-def get_jetson_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
+    def driver():
+        while running:
+            start = time.time()
+            with lock:
+                key = pressed
+            if key in step_map:
+                servo_id, delta = step_map[key]
+                target = angles[servo_id] + delta
+                low, high = config.SERVO_LIMITS[servo_id]
+                if low <= target <= high:
+                    angles[servo_id] = target
+                    try:
+                        arm.set_servo(servo_id, target, 60)
+                    except UnsafeAngle:
+                        pass
+                else:
+                    sys.stdout.write("\a")
+            x, y, z, _ = kinematics.forward(angles[1], angles[2], angles[3], angles[4])
+            sys.stdout.write(
+                f"\r servos {[int(angles[i]) for i in range(1, 7)]}  "
+                f"gripper x={x:7.1f} y={y:7.1f} z={z:7.1f}   ")
+            sys.stdout.flush()
+            time.sleep(max(0.03 - (time.time() - start), 0))
 
-def flush_terminal_buffer():
+    threads = [threading.Thread(target=reader, daemon=True),
+               threading.Thread(target=driver, daemon=True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     try:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
-
-def interactive_jogger(arm, baseline_array):
-    print("\nManual jog. Hold a key to sweep that motor.")
-    print("  1/2 base   3/4 shoulder   5/6 elbow   7/8 wrist-roll   9/0 wrist-tilt   -/= claw")
-    print("  [space] confirm position    [x] cancel")
-
-    shared_joints = list(baseline_array)
-    running = True
-    confirmed = True
-    active_key = None
-    key_lock = threading.Lock()
-
-    def input_reader():
-        nonlocal running, active_key, confirmed
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            while running:
-                r, _, _ = select.select([sys.stdin], [], [], 0.01)
-                if r:
-                    ch = sys.stdin.read(1)
-                    if ch == ' ':
-                        confirmed = True
-                        running = False
-                        break
-                    elif ch.lower() == 'x':
-                        confirmed = False
-                        running = False
-                        break
-                    with key_lock:
-                        active_key = ch
-                else:
-                    with key_lock:
-                        active_key = None
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-    def motor_driver():
-        nonlocal running, active_key
-        step_map = {
-            '1': (0, 3),  '2': (0, -3),
-            '3': (1, 2),  '4': (1, -2),
-            '5': (2, 2),  '6': (2, -2),
-            '7': (3, 3),  '8': (3, -3),
-            '9': (4, 3),  '0': (4, -3),
-            '-': (5, 3),  '=': (5, -3)
-        }
-        while running:
-            loop_start = time.time()
-            with key_lock:
-                current_key = active_key
-            if current_key in step_map:
-                idx, delta = step_map[current_key]
-                new_angle = shared_joints[idx] + delta
-                if 0 <= new_angle <= 180:
-                    shared_joints[idx] = new_angle
-                    if arm:
-                        arm.set_servo(idx + 1, new_angle, 20)
-            sys.stdout.write(f"\r[Position] {shared_joints}    ")
-            sys.stdout.flush()
-            time.sleep(max(0.025 - (time.time() - loop_start), 0))
-
-    t1 = threading.Thread(target=input_reader, daemon=True)
-    t2 = threading.Thread(target=motor_driver, daemon=True)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
-    flush_terminal_buffer()
     print()
-    return shared_joints, confirmed
+    return angles, confirmed
 
-def run_hardware_flash(arm):
-    print("\nFactory servo reset. This re-zeros all 6 motors to 90 degrees.")
-    if arm:
-        arm.move_to_joints([90, 90, 90, 90, 90, 90], config.HOME_SPEED)
-        time.sleep(2.0)
-        for i in range(1, 7):
-            try:
-                arm.bus.Arm_serial_servo_write_offset_switch(i)
-                time.sleep(0.05)
-            except Exception as e:
-                print(f"[Warning] Servo {i} offset-clear failed: {e}")
-        print("Hold the arm perfectly straight and vertical.")
-        input("Press [Enter] to release motor torque...")
-        arm.bus.Arm_serial_set_torque(0)
-        time.sleep(0.5)
-    print("Adjust the arm manually to dead-center vertical.")
-    input("Once aligned, press [Enter] to lock it in as the new zero...")
-    if arm:
-        arm.bus.Arm_serial_set_torque(1)
-        time.sleep(0.5)
-        arm.bus.Arm_serial_servo_write6(90, 90, 90, 90, 90, 90, 800)
-        time.sleep(1.0)
-        arm.bus.Arm_serial_servo_write_offset_state()
-        time.sleep(0.5)
-    print("Done. Servos re-zeroed.")
 
-def quick_relock(arm, mapper, server):
-    """
-    Mandatory every boot: since these servos lose position reference once
-    powered off, we re-verify the two reference points math depends on
-    (observe angle, e4 grab point) before anything else is allowed to run.
-    """
-    print("\n=== Startup relock (required) ===")
-    jetson_ip = get_jetson_ip()
-    print(f"Live view: http://{jetson_ip}:{config.WEB_PORT}")
+# ============================ calibrate ============================
 
-    if arm:
-        arm.move_to_joints(config.POS_CHESS_OBSERVE, config.HOME_SPEED)
-    print("\nStep 1/2: confirm the observation angle still frames the board.")
-    new_obs, valid = interactive_jogger(arm, config.POS_CHESS_OBSERVE)
-    if not valid:
+def calibrate_board(arm, camera):
+    print("\n--- Board calibration ---")
+    print("Pick three squares to touch. They must not be in a straight line.")
+    print(f"Default is {', '.join(DEFAULT_CAL_SQUARES)}; if a corner is hard to reach,")
+    print("use a nearer one instead, e.g. a1 h1 a6.")
+    raw = input(f"Squares [{' '.join(DEFAULT_CAL_SQUARES)}]: ").strip().lower()
+    squares = raw.split() if raw else list(DEFAULT_CAL_SQUARES)
+    if len(squares) != 3:
+        print("  Need exactly three.")
+        return None
+
+    print("\nPut a piece on each of those squares (the same kind of piece each time).")
+    print("For each one, jog the OPEN claw around the piece at grabbing height,")
+    print("then press space.")
+    input("Press [Enter] when the pieces are on the board...")
+
+    arm.open_claw()
+    points = {}
+    angles = {i + 1: v for i, v in enumerate(arm.read_all())}
+    for square in squares:
+        angles, ok = jog(arm, angles, f"open claw around the piece on {square}", camera)
+        if not ok:
+            print("Cancelled. Nothing saved.")
+            return None
+        x, y, z, _ = kinematics.forward(angles[1], angles[2], angles[3], angles[4])
+        points[square] = (x, y, z)
+        print(f"  {square} recorded at x={x:.1f} y={y:.1f} z={z:.1f}")
+
+    try:
+        frame = chessboard.BoardFrame.from_points(points)
+    except ValueError as exc:
+        print(f"  {exc}")
+        return None
+
+    file_mm, rank_mm = frame.square_size_mm()
+    print(f"\nSquare size measured: {file_mm:.1f}mm across files, {rank_mm:.1f}mm across ranks")
+    if abs(file_mm - rank_mm) > 3.0:
+        print("  WARNING: those should match. One of the three points was probably")
+        print("  not right over the piece -- often the far square, because the arm")
+        print("  can barely stretch there. Worth redoing before you trust it.")
+    frame.save()
+    print(f"Saved to {chessboard.CALIBRATION_PATH}")
+    arm.park()
+    return frame
+
+
+def show_calibration(frame):
+    if frame is None:
+        print("\nNo calibration yet.")
+        return
+    file_mm, rank_mm = frame.square_size_mm()
+    print(f"\nSquare size: {file_mm:.1f} x {rank_mm:.1f} mm")
+    for square in ("a1", "h1", "a8", "h8", "e4"):
+        x, y, z = frame.square_xyz(square)
+        ok = kinematics.solve_reachable(x, y, z)[0] is not None
+        print(f"  {square}: x={x:7.1f} y={y:7.1f} z={z:7.1f}  "
+              f"{'reachable' if ok else 'OUT OF REACH'}")
+
+
+def reachability_report(frame):
+    if frame is None:
+        print("\nCalibrate first.")
+        return
+    bad = [f"{f}{r}" for f in chessboard.FILES for r in range(1, 9)
+           if kinematics.solve_reachable(*frame.square_xyz(f"{f}{r}"))[0] is None]
+    if bad:
+        print(f"\n{len(bad)} of 64 squares out of reach:\n  " + " ".join(bad))
+        print("  Move the board closer, or lower the arm, then recalibrate.")
+    else:
+        print("\nAll 64 squares are reachable.")
+
+
+def calibrate_menu(arm, state, camera):
+    while True:
+        print("\n-- Calibrate --")
+        print("1. Board calibration (touch three squares)")
+        print("2. Show current calibration")
+        print("3. Which squares can it reach?")
+        print("4. Back")
+        choice = input("Select: ").strip()
+        if choice == '1':
+            frame = calibrate_board(arm, camera)
+            if frame:
+                state["frame"] = frame
+        elif choice == '2':
+            show_calibration(state["frame"])
+        elif choice == '3':
+            reachability_report(state["frame"])
+        elif choice == '4':
+            return
+
+
+# ============================ test ============================
+
+def need_frame(state):
+    if state["frame"] is None:
+        print("\nCalibrate the board first.")
         return False
-    config.POS_CHESS_OBSERVE = new_obs
-    update_config_file("POS_CHESS_OBSERVE", str(new_obs))
-
-    if arm:
-        e4_joints = mapper.get_square_joints("e4", config.POS_CHESS_GRAB_BASE)
-        arm.move_to_joints(e4_joints, config.ACTION_SPEED)
-    print("\nStep 2/2: confirm the gripper is centered over square e4.")
-    new_base, valid = interactive_jogger(arm, config.POS_CHESS_GRAB_BASE)
-    if not valid:
-        return False
-    config.POS_CHESS_GRAB_BASE = new_base
-    update_config_file("POS_CHESS_GRAB_BASE", str(new_base))
-
-    if arm:
-        arm.move_to_joints(config.POS_CHESS_OBSERVE, config.HOME_SPEED)
-    print("\nRelock complete.")
     return True
 
-def run_full_recalibration(arm, mapper):
-    """Optional, deeper check: run this if the board itself moved, not just the arm."""
-    print("\n=== Full board recalibration ===")
-    for corner in ["a1", "h1", "a8", "h8"]:
-        print(f"\nChecking corner: {corner}")
-        if arm:
-            c_joints = mapper.get_square_joints(corner, config.POS_CHESS_GRAB_BASE)
-            arm.move_to_joints(c_joints, config.ACTION_SPEED)
-        _, valid = interactive_jogger(arm, config.POS_CHESS_GRAB_BASE)
-        if not valid:
-            return False
-    print("\nAll 4 corners verified.")
-    return True
+
+def ask_square(prompt, frame):
+    raw = input(prompt).strip().lower()
+    try:
+        return frame.square_xyz(raw), raw
+    except ValueError as exc:
+        print(f"  {exc}")
+        return None, raw
+
+
+def test_hover(arm, state):
+    if not need_frame(state):
+        return
+    xyz, name = ask_square("Square to hover over (e.g. e4): ", state["frame"])
+    if xyz is None:
+        return
+    try:
+        arm.goto(xyz[0], xyz[1], xyz[2] + config.HOVER_MM)
+        print(f"  hovering over {name}")
+    except OutOfReach as exc:
+        print(f"  {exc}")
+
+
+def test_corners(arm, state):
+    if not need_frame(state):
+        return
+    print("\nVisiting the four corners at hover height.")
+    for square in ("a1", "h1", "h8", "a8"):
+        x, y, z = state["frame"].square_xyz(square)
+        try:
+            arm.goto(x, y, z + config.HOVER_MM)
+            print(f"  {square}: ok")
+        except OutOfReach as exc:
+            print(f"  {square}: {exc}")
+        input("  [Enter] for the next corner...")
+    arm.park()
+
+
+def test_grab(arm, state):
+    if not need_frame(state):
+        return
+    xyz, name = ask_square("Square with a piece on it (e.g. e2): ", state["frame"])
+    if xyz is None:
+        return
+    x, y, z = xyz
+    try:
+        arm.open_claw()
+        arm.goto(x, y, z + config.HOVER_MM)
+        arm.move_line((x, y, z))
+        print("  gripped something" if arm.close_claw() else "  closed on nothing")
+        arm.move_line((x, y, z + config.HOVER_MM))
+        input("  [Enter] to put it back...")
+        arm.move_line((x, y, z))
+        arm.open_claw()
+        arm.move_line((x, y, z + config.HOVER_MM))
+        arm.park()
+    except OutOfReach as exc:
+        print(f"  {exc}")
+
+
+def test_menu(arm, state):
+    while True:
+        print("\n-- Test --")
+        print("1. Hover over a square")
+        print("2. Visit the four corners")
+        print("3. Grab a piece and put it back")
+        print("4. Back")
+        choice = input("Select: ").strip()
+        if choice == '1':
+            test_hover(arm, state)
+        elif choice == '2':
+            test_corners(arm, state)
+        elif choice == '3':
+            test_grab(arm, state)
+        elif choice == '4':
+            return
+
+
+# ============================ play ============================
+
+def play_move(arm, state):
+    if not need_frame(state):
+        return
+    src, from_name = ask_square("From square: ", state["frame"])
+    if src is None:
+        return
+    dst, to_name = ask_square("To square: ", state["frame"])
+    if dst is None:
+        return
+    try:
+        gripped = arm.move_piece(src, dst)
+        print(f"  moved {from_name} -> {to_name}" +
+              ("" if gripped else "   (warning: the claw never felt a piece)"))
+        arm.park()
+    except OutOfReach as exc:
+        print(f"  {exc}")
+
+
+def play_menu(arm, state):
+    while True:
+        print("\n-- Play --")
+        print("1. Move one piece")
+        print("2. Full game (not built yet: needs the engine and vision)")
+        print("3. Back")
+        choice = input("Select: ").strip()
+        if choice == '1':
+            play_move(arm, state)
+        elif choice == '2':
+            print("  Not built yet.")
+        elif choice == '3':
+            return
+
+
+# ============================ camera ============================
+
+def camera_menu(state):
+    while True:
+        camera = state["camera"]
+        status = "off" if camera is None else f"on -- {camera.url()}  ({camera.stats()})"
+        print(f"\n-- Camera --  currently {status}")
+        print("1. Start" if camera is None else "1. Stop")
+        print("2. Refresh speed reading")
+        print("3. Back")
+        choice = input("Select: ").strip()
+        if choice == '1':
+            if camera is None:
+                if Camera is None:
+                    print(f"  camera unavailable: {CAMERA_ERROR}")
+                    continue
+                try:
+                    cam = Camera()
+                    cam.start()
+                    state["camera"] = cam
+                    print(f"  streaming at {cam.url()}")
+                except Exception as exc:
+                    print(f"  {exc}")
+            else:
+                camera.stop()
+                state["camera"] = None
+                print("  stopped")
+        elif choice == '2':
+            if camera:
+                time.sleep(1.0)
+                print(f"  {camera.stats()}")
+        elif choice == '3':
+            return
+
+
+# ============================ main ============================
 
 def main():
-    print (f"DOFBOT Chess v{config.VERSION}")
-    arm = ArmControl()
-    mapper = BoardMapper()
-    kinematics = ArmKinematics(arm)
-    stockfish = ChessEngineInterface()
-    server = WebStreamServer()
-    server.start_stream()
+    print(f"DOFBOT Chess v{config.VERSION}")
+    state = {"frame": chessboard.BoardFrame.load(), "camera": None}
+    print("Board calibration: " + ("loaded" if state["frame"] else "none yet"))
 
-    # Mandatory every run -- not a menu option, can't be skipped.
-    while not quick_relock(arm, mapper, server):
-        print("\nRelock was cancelled. It must complete before continuing.")
-        retry = input("Press [Enter] to retry, or 'q' to quit: ").strip().lower()
-        if retry == 'q':
-            server.stop_stream()
-            sys.exit()
+    if Camera is not None:
+        try:
+            cam = Camera()
+            cam.start()
+            state["camera"] = cam
+            print(f"Camera: {cam.url()}")
+        except Exception as exc:
+            print(f"Camera off: {exc}")
+    else:
+        print(f"Camera off: {CAMERA_ERROR}")
 
-    while True:
-        print("\n=== DOFBOT Chess ===")
-        print("1. Full board recalibration (only if the board itself moved)")
-        print("2. Factory servo reset")
-        print("3. Play")
-        print("4. Quit")
-        choice = input("Select: ").strip()
+    with Arm() as arm:
+        print(f"Servos: {[int(v) if v is not None else None for v in arm.read_all()]}")
+        try:
+            while True:
+                print("\n=== DOFBOT Chess ===")
+                print("1. Calibrate")
+                print("2. Test")
+                print("3. Play")
+                print("4. Camera")
+                print("5. Quit")
+                choice = input("Select: ").strip()
+                if choice == '1':
+                    calibrate_menu(arm, state, state["camera"])
+                elif choice == '2':
+                    test_menu(arm, state)
+                elif choice == '3':
+                    play_menu(arm, state)
+                elif choice == '4':
+                    camera_menu(state)
+                elif choice == '5':
+                    return
+        finally:
+            if state["camera"]:
+                state["camera"].stop()
 
-        if choice == '4':
-            server.stop_stream()
-            sys.exit()
-        elif choice == '1':
-            run_full_recalibration(arm, mapper)
-        elif choice == '2':
-            run_hardware_flash(arm)
-        elif choice == '3':
-            print("\n[Game Initialized] Active. Robot playing as Black.")
-            break
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nStopped. Arm parking...")
