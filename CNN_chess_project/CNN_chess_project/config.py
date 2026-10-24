@@ -7,7 +7,7 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -87,7 +87,9 @@ APPROACH_MIN = 120.0       # most we'll let the hand tilt to reach far squares
 
 # ---------- teaching by hand (sessions/teach.py) ----------
 # Spread out, all inside the reach ring. 4+ squares lets the program check
-# your touches: with exactly 3 the fit is perfect by definition.
+# your touches. Avoid the far corners (a8/h8) and the squares right in front
+# of the base: pushing the claw there bends a joint past its range, and a
+# servo past its range can't report its angle.
 TEACH_SQUARES = ["b2", "g2", "b6", "g6", "e4"]
 TEACH_READS = 5             # servo readings averaged per taught square
 TEACH_MAX_RESIDUAL_MM = 4.0 # a touch further than this from the fitted board is probably off

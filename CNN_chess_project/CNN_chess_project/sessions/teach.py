@@ -19,6 +19,7 @@ import time
 
 import config
 from robot import kinematics
+from robot.arm import OUT_OF_RANGE_HINT, silent_servos
 from robot.board_frame import BoardFrame, format_grid, is_square
 
 
@@ -43,8 +44,10 @@ def _ask_squares():
 def _record(arm, camera, square, photo_dir):
     """Reads where the claw is right now and photographs it."""
     angles = arm.read_angles(samples=config.TEACH_READS)
-    if any(a is None for a in angles[:4]):
-        print("  A servo didn't answer. Hold still and try again.")
+    silent = silent_servos(angles)
+    if silent:
+        print("  %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
+        print("  (Or that square is beyond the arm's reach -- type s to skip it.)")
         return None
     x, y, z, _ = kinematics.forward(*angles[:4])
     photo = None

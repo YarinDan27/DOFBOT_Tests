@@ -13,6 +13,7 @@ import time
 
 import config
 from robot import kinematics, safety
+from robot.arm import OUT_OF_RANGE_HINT, silent_servos
 
 
 def load():
@@ -69,9 +70,12 @@ def run(arm, camera=None):
             if ans == "q":
                 break
             angles = arm.read_angles(samples=config.TEACH_READS)
-            if any(a is None for a in angles[:5]):
-                print("  A servo didn't answer. Hold still and try again.")
+            silent = silent_servos(angles)
+            if silent:
+                print("  %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
                 continue
+            if angles[4] is None:
+                angles[4] = config.CENTER       # wrist roll didn't answer: face forward
             angles[5] = config.CLAW_OPEN
             problem = _problem(angles, arm.zone)
             if problem:

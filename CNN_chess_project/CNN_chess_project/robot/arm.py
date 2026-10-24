@@ -35,6 +35,30 @@ class UnsafeMove(Exception):
     pass
 
 
+class StillLimp(Exception):
+    """You chose to leave servo power off. The arm is floppy: put it down."""
+
+
+SERVO_NAMES = {1: "base", 2: "shoulder", 3: "elbow", 4: "wrist", 5: "wrist roll", 6: "claw"}
+
+
+def silent_servos(angles, ids=(1, 2, 3, 4)):
+    """
+    Which of these servos didn't answer, as text ('servo 3 (elbow)'), or None
+    if they all did. Servos 1-4 decide where the claw is; 5 and 6 only turn
+    or open it in place, so they're optional.
+    """
+    silent = [i for i in ids if angles[i - 1] is None]
+    if not silent:
+        return None
+    return " and ".join("servo %d (%s)" % (i, SERVO_NAMES[i]) for i in silent)
+
+
+OUT_OF_RANGE_HINT = ("A servo can't report its angle while its joint is pushed past "
+                     "its range -- if one is bent to its limit, ease it back toward "
+                     "the middle.")
+
+
 def _distance(a, b):
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
@@ -54,23 +78,27 @@ class Arm:
         self.is_limp = False
         self.zone = safety.Zone.default()
         self.home_pose = list(config.POSE_READY)
-        # Power on aimed at where it already is. If the servos can't be read,
-        # this switches on anyway (as the old code did) -- but nothing moves
-        # until start_up() has checked where the arm is.
+        # Power on aimed at where it already is. If servos 1-4 can't be read,
+        # leave the power as it is rather than switch on blind (a blind
+        # switch-on drives each servo to its last target: a jump).
+        # start_up() then says which servo is silent.
         self.stiffen_here(required=False)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        if exc_type is StillLimp or (self.is_limp and exc_type is KeyboardInterrupt):
+            print("\n  Servo power is OFF -- the arm is floppy. Lay it down gently.")
+            return exc_type is StillLimp       # StillLimp: end quietly, no traceback
         try:
             if self.is_limp:
-                print("\n  The arm is still limp. HOLD IT, then press Enter.")
-                input()
-                self.stiffen_here()
+                self.power_on_with_help()
             self.park()
+        except StillLimp:
+            print("  Servo power left OFF -- lay the arm down gently.")
         except Exception as e:
-            print("  Didn't park (%s). The arm is holding where it is." % e)
+            print("  Didn't park (%s)." % e)
         return False
 
     # ---------------- where things are ----------------
@@ -95,6 +123,17 @@ class Arm:
             if value is not None:
                 return float(value)
             time.sleep(0.05)
+        # Arm_Lib's normal read returns None whenever the angle is outside
+        # 0-180 -- e.g. a joint pushed past its range by hand. Its read_any()
+        # reports the same angle without that check. (Not for servo 5: its
+        # scale is different.) A raw "no data" reads as about -73: rejected.
+        if servo_id != 5 and hasattr(self.bus, "Arm_serial_servo_read_any"):
+            try:
+                value = self.bus.Arm_serial_servo_read_any(servo_id)
+            except Exception:
+                value = None
+            if value is not None and -40.0 <= value <= 220.0:
+                return float(value)
         return None
 
     def read_all(self):
@@ -138,24 +177,32 @@ class Arm:
         every target "where you already are", then switch on.
         """
         angles = self.read_angles(samples=3)
-        if any(a is None for a in angles[:5]):
+        silent = silent_servos(angles)
+        if silent:
             if required:
-                raise RuntimeError("couldn't read every servo -- keep holding the arm "
-                                   "and try again")
-            self.bus.Arm_serial_set_torque(1)
-            self.is_limp = False
-            return
+                raise RuntimeError(silent + " didn't answer")
+            return False
         for servo_id, angle in enumerate(angles, start=1):
-            if angle is None:          # claw didn't answer: leave it alone
+            if angle is None:          # wrist roll / claw: optional
+                print("  (%s didn't answer -- it may turn a little when power "
+                      "comes on)" % SERVO_NAMES[servo_id])
                 continue
-            self.bus.Arm_serial_servo_write(servo_id, int(round(_clamp(servo_id, angle))), 800)
+            target = _clamp(servo_id, angle)
+            if abs(target - angle) > 2.0:
+                print("  (%s is at %.0f, past its safe range -- it will move back to "
+                      "%.0f when power comes on)" % (SERVO_NAMES[servo_id], angle, target))
+            self.bus.Arm_serial_servo_write(servo_id, int(round(target)), 800)
         time.sleep(0.1)
         self.bus.Arm_serial_set_torque(1)
         time.sleep(0.9)
         self.is_limp = False
+        return True
 
     def power_on_with_help(self):
-        """Asks you to hold the arm, then powers on without a jump."""
+        """
+        Asks you to hold the arm, then powers on without a jump. If a servo
+        won't answer, you can keep trying or leave the power off (StillLimp).
+        """
         print("\nHOLD THE ARM -- servo power is coming back on.")
         input("Press Enter when you're holding it: ")
         while True:
@@ -163,7 +210,10 @@ class Arm:
                 self.stiffen_here()
                 return
             except RuntimeError as e:
-                input("  %s. Press Enter to retry: " % e)
+                print("  %s. %s" % (e, OUT_OF_RANGE_HINT))
+                ans = input("  Enter = try again   q = leave the power off and quit: ")
+                if ans.strip().lower() == "q":
+                    raise StillLimp()
 
     def lift_by_hand(self):
         """No safe way to move by itself: you lift it, then it powers on there."""
@@ -178,14 +228,16 @@ class Arm:
     def current_angles(self):
         """All six angles (averaged). Raises if servos 1-4 can't be read."""
         angles = self.read_angles(samples=2)
-        if any(a is None for a in angles[:4]):
-            raise RuntimeError("a servo didn't answer -- can't tell where the arm is")
+        silent = silent_servos(angles)
+        if silent:
+            raise RuntimeError(silent + " didn't answer -- can't tell where the arm is")
         return angles
 
     def current_xyz(self):
         s = self.read_all()
-        if any(v is None for v in s[:4]):
-            raise RuntimeError("a servo didn't answer -- can't tell where the arm is")
+        silent = silent_servos(s)
+        if silent:
+            raise RuntimeError(silent + " didn't answer -- can't tell where the arm is")
         x, y, z, _ = kinematics.forward(s[0], s[1], s[2], s[3])
         return (x, y, z)
 

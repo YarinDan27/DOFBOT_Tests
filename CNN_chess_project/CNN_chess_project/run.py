@@ -110,7 +110,8 @@ def main():
             arm.start_up()
         except RuntimeError as e:
             print("Couldn't start: %s." % e)
-            print("Check the arm's power switch and cable, then run this again.")
+            print("If that joint is bent to its limit, ease it back toward the middle; "
+                  "otherwise check the arm's power and cable. Then run this again.")
             return
 
         while True:
