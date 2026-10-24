@@ -19,7 +19,7 @@ import time
 
 import config
 from robot import kinematics
-from robot.arm import OUT_OF_RANGE_HINT, silent_servos
+from robot.arm import OUT_OF_RANGE_HINT, pose_problem
 from robot.board_frame import BoardFrame, format_grid, is_square
 
 
@@ -44,10 +44,10 @@ def _ask_squares():
 def _record(arm, camera, square, photo_dir):
     """Reads where the claw is right now and photographs it."""
     angles = arm.read_angles(samples=config.TEACH_READS)
-    silent = silent_servos(angles)
-    if silent:
-        print("  %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
-        print("  (Or that square is beyond the arm's reach -- type s to skip it.)")
+    problem = pose_problem(angles)
+    if problem:
+        print("  %s. %s" % (problem, OUT_OF_RANGE_HINT))
+        print("  (That square may be beyond the arm's reach -- type s to skip it.)")
         return None
     x, y, z, _ = kinematics.forward(*angles[:4])
     photo = None
@@ -111,6 +111,7 @@ def run(arm, camera=None):
 
     taught = {}
     frame = None
+    interrupted = False
     try:
         i = 0
         while i < len(squares):
@@ -162,14 +163,18 @@ def run(arm, camera=None):
                     taught[choice] = point
             elif choice:
                 print("  Didn't understand %r." % choice)
+    except KeyboardInterrupt:
+        interrupted = True          # Ctrl-C: power stays off, nothing moves
+        raise
     finally:
-        arm.power_on_with_help()
-        print("  Rising straight up, then going home...")
-        try:
-            arm.lift_clear()
-            arm.go_home()
-        except Exception as e:
-            print("  Couldn't get home automatically (%s). It's holding where it is." % e)
+        if not interrupted:
+            arm.power_on_with_help()
+            print("  Rising straight up, then going home...")
+            try:
+                arm.lift_clear()
+                arm.go_home()
+            except Exception as e:
+                print("  Couldn't get home automatically (%s). It's holding where it is." % e)
 
     if frame is None:
         print("Nothing saved.")

@@ -7,7 +7,7 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -72,8 +72,14 @@ LINE_TOL_MM = 5.0          # rising straight up: the claw may wander this far of
 # (x from, x to, y from, y to, mm), at the height measured in the old project.
 DEFAULT_ZONE = (-170.0, 170.0, 70.0, 330.0)
 DEFAULT_BOARD_Z = -13.0
-JOINT_MS_PER_DEG = 14      # joint move speed: ~1.3 s for a 90 degree turn
-JOINT_MIN_MS = 400
+JOINT_MS_PER_DEG = 22      # joint move speed: ~2 s for a 90 degree turn (slow on purpose)
+JOINT_MIN_MS = 110         # shortest sub-step
+JOINT_SUBSTEP_DEG = 5.0    # joint moves are cut into sub-steps this big, each checked
+
+# ---------- read-back checks (robot/arm.py) ----------
+STALL_DEG = 6.0            # a servo this far short of where it was sent = blocked: stop
+LIMIT_SLACK_DEG = 3.0      # a reading this far past a limit is still trusted (and nudged
+                           # back onto it); further than that = don't power on or move
 
 # ---------- motion planning ----------
 HOVER_MM = 45.0            # how high above a piece to hover before descending
@@ -102,7 +108,8 @@ QUICK_SQUARES = ["a1", "d1", "h1", "a4", "e4", "h4", "a6", "d6", "h6",
                  "b8", "g8"]
 
 # ---------- camera ----------
-CAMERA_INDEX = 0
+CAMERA_INDEX = 0           # tried first; every other /dev/video* is tried after it
+CAMERA_FREE_DEVICE = True  # on start, stop other programs holding the camera (fuser)
 WEB_PORT = 8080
 CAM_WIDTH = 640     # smaller frames compress faster; try 320 if it's still slow
 CAM_HEIGHT = 480

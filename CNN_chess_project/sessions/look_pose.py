@@ -13,7 +13,7 @@ import time
 
 import config
 from robot import kinematics, safety
-from robot.arm import OUT_OF_RANGE_HINT, silent_servos
+from robot.arm import OUT_OF_RANGE_HINT, pose_problem, silent_servos
 
 
 def load():
@@ -77,14 +77,18 @@ def run(arm, camera=None):
             if angles[4] is None:
                 angles[4] = config.CENTER       # wrist roll didn't answer: face forward
             angles[5] = config.CLAW_OPEN
-            problem = _problem(angles, arm.zone)
+            problem = pose_problem(angles) or _problem(angles, arm.zone)
             if problem:
                 print("  " + problem)
                 continue
             pose = [round(a, 1) for a in angles]
             break
-    finally:
+    except KeyboardInterrupt:
+        raise                       # Ctrl-C: power stays off, nothing moves
+    except Exception:
         arm.power_on_with_help()
+        raise
+    arm.power_on_with_help()
 
     if pose is None:
         print("Nothing saved.")

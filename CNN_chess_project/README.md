@@ -18,8 +18,10 @@ On start, the arm goes **home**: the look-at-board pose you taught (option 2), o
 No-hardware checks (laptop or Jetson):
 
 ```bash
-python3 tests/test_geometry.py && python3 tests/test_safety.py
+python3 tests/test_geometry.py && python3 tests/test_safety.py && python3 tests/test_arm.py
 ```
+
+**Camera:** on start it stops any other program holding the camera (what `fuser` shows), then tries each `/dev/video*` until one gives a real picture, and says which one it used. Menu 7 shows the camera and its frame rate.
 
 ## Layout
 
@@ -39,6 +41,16 @@ python3 tests/test_geometry.py && python3 tests/test_safety.py
 **Rule:** `robot/`, `vision/` and `game/` never import each other. That keeps vision testable on saved photos and chess logic testable without the arm.
 
 ## Safety
+
+**v0.2.2, after the arm drove into the board on 2026-10-24:**
+- **Start-up says where it thinks the claw is and waits for your Enter.** Standing upright, z should be about 423 mm. If what it says doesn't match what you see, press Ctrl-C.
+- **Every move is checked against the servos' read-back**, in small sub-steps (5° for joint moves). If a joint falls more than 6° short of where it was sent, because something is in the way or the arm isn't where the program thought, it **stops and holds still**. It won't move again until you say the way is clear.
+- **No power-on and no move from a reading it can't trust:** a servo that doesn't answer, or reads outside its safe range. You move the arm by hand instead. (v0.2.1's fallback read is gone; a bad reading from it is the likely cause of the crash.)
+- **Ctrl-C never moves the arm.** Option 8 parks and quits.
+- Every command and read-back is logged in `logs/motion/`.
+- `python3 tests/test_arm.py` runs the real arm code against a simulated arm that stalls on the board and can misreport a servo. Nothing moves.
+
+**From v0.2.0:**
 
 - Every angle is checked against `config.SERVO_LIMITS` before anything moves.
 - Moves near the board are straight lines in 10 mm steps, and the **whole route is solved before the arm moves**. If any point is unreachable, nothing moves.

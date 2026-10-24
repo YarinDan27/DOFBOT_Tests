@@ -22,7 +22,7 @@ import time
 
 import config
 from robot import kinematics
-from robot.arm import OutOfReach
+from robot.arm import ArmBlocked, OutOfReach, silent_servos
 from robot.board_frame import all_squares, format_grid
 from vision import claw_check
 
@@ -103,6 +103,8 @@ def run(arm, frame, camera=None):
 
     camera_check_built = True
     results = {}
+    blocked = None
+    stopped_by_you = False
     try:
         for n, sq in enumerate(squares, start=1):
             tag = "  [%d/%d] %s:" % (n, len(squares), sq)
@@ -118,12 +120,18 @@ def run(arm, frame, camera=None):
                 results[sq] = {"status": "no_route", "why": str(e)}
                 print(tag + " no safe route")
                 continue
+            except ArmBlocked as e:
+                results[sq] = {"status": "blocked", "why": str(e)}
+                print(tag + " BLOCKED -- stopping the test")
+                blocked = e
+                break
 
             time.sleep(config.SETTLE_S)
             angles = arm.read_angles(samples=3)
-            if any(a is None for a in angles[:4]):
-                results[sq] = {"status": "servo_read_failed"}
-                print(tag + " a servo didn't answer")
+            silent = silent_servos(angles)
+            if silent:
+                results[sq] = {"status": "servo_read_failed", "why": silent}
+                print(tag + " %s didn't answer" % silent)
                 continue
             actual = kinematics.forward(*angles[:4])[:3]
             aimed = kinematics.solve_reachable(*target)[0]
@@ -151,8 +159,13 @@ def run(arm, frame, camera=None):
                            "camera_error_mm": camera_error}
             print(tag + " off by %.1f mm" % error)
     except KeyboardInterrupt:
-        print("\n  Stopped early.")
-    finally:
+        stopped_by_you = True
+        print("\n  Stopped by you. The arm is holding still where it is.")
+
+    if blocked is not None:
+        print("  STOPPED: %s." % blocked)
+        print("  The arm is holding still where it stopped.")
+    elif not stopped_by_you:
         try:
             arm.lift_clear()
             arm.go_home()

@@ -8,15 +8,24 @@ Safety rules, all enforced here:
      small steps, instead of letting the joints swing wherever they like
   3. the WHOLE path is solved before the first step runs -- if any point on it
      is unreachable, nothing moves at all
-  4. (new) every joint swing -- going home, parking, the jump at the start of
-     a straight line -- is simulated by robot/safety.py first, and refused if
+  4. every joint swing -- going home, parking, the jump at the start of a
+     straight line -- is simulated by robot/safety.py first, and refused if
      any part of the arm would sweep over the board low
-  5. (new) power comes on aimed at where the arm already is: no jump
+  5. power comes on aimed at where the arm already is: no jump. If a servo
+     can't be read, or reads outside its safe range, power does NOT come on
+     and nothing moves -- you move the arm by hand instead
+  6. (v0.2.2) every move is checked against what the servos report back,
+     in small sub-steps. If a joint falls short of where it was sent --
+     something is in the way, or the arm isn't where the program thought --
+     it stops and holds still (ArmBlocked). Rules 4 and 5 trust the servo
+     readings; this one catches it when the readings were wrong.
 
-If it's down near the board, it rises straight up before anything else. If
-it can't find a safe way at all, it asks you to lift it by hand.
+Every command and read-back goes to logs/motion/, so a bad move can be
+replayed afterwards.
 """
+import json
 import math
+import os
 import time
 
 import config
@@ -33,6 +42,10 @@ class UnsafeAngle(Exception):
 
 class UnsafeMove(Exception):
     pass
+
+
+class ArmBlocked(Exception):
+    """A joint didn't reach where it was sent. The arm is holding still."""
 
 
 class StillLimp(Exception):
@@ -54,9 +67,25 @@ def silent_servos(angles, ids=(1, 2, 3, 4)):
     return " and ".join("servo %d (%s)" % (i, SERVO_NAMES[i]) for i in silent)
 
 
+def pose_problem(angles):
+    """
+    Why these readings can't be trusted to move from, or None if they're fine:
+    a servo that didn't answer, or one outside its safe range.
+    """
+    silent = silent_servos(angles)
+    if silent:
+        return silent + " didn't answer"
+    for sid in (1, 2, 3, 4):
+        low, high = config.SERVO_LIMITS[sid]
+        a = angles[sid - 1]
+        if a < low - config.LIMIT_SLACK_DEG or a > high + config.LIMIT_SLACK_DEG:
+            return ("servo %d (%s) is at %.0f, outside its safe range %.0f-%.0f"
+                    % (sid, SERVO_NAMES[sid], a, low, high))
+    return None
+
+
 OUT_OF_RANGE_HINT = ("A servo can't report its angle while its joint is pushed past "
-                     "its range -- if one is bent to its limit, ease it back toward "
-                     "the middle.")
+                     "its range -- ease that joint back toward the middle.")
 
 
 def _distance(a, b):
@@ -76,12 +105,15 @@ class Arm:
         self.bus = Arm_Device()
         time.sleep(0.1)
         self.is_limp = False
+        self.powered = False        # True once stiffen_here() has switched on safely
+        self.blocked = False
+        self.skip_park = False      # set when you quit with Ctrl-C: no moving on the way out
         self.zone = safety.Zone.default()
         self.home_pose = list(config.POSE_READY)
-        # Power on aimed at where it already is. If servos 1-4 can't be read,
-        # leave the power as it is rather than switch on blind (a blind
-        # switch-on drives each servo to its last target: a jump).
-        # start_up() then says which servo is silent.
+        self._log_file = None
+        self._open_log()
+        # Power on aimed at where it already is -- only if every reading is
+        # trustworthy. Otherwise nothing changes; start_up() deals with it.
         self.stiffen_here(required=False)
 
     def __enter__(self):
@@ -91,6 +123,13 @@ class Arm:
         if exc_type is StillLimp or (self.is_limp and exc_type is KeyboardInterrupt):
             print("\n  Servo power is OFF -- the arm is floppy. Lay it down gently.")
             return exc_type is StillLimp       # StillLimp: end quietly, no traceback
+        if self.blocked:
+            print("\n  Not parking: the last move was blocked. The arm is holding "
+                  "still where it stopped.")
+            return False
+        if exc_type is KeyboardInterrupt or self.skip_park:
+            print("\n  Not parking (you pressed Ctrl-C). The arm is holding still.")
+            return False
         try:
             if self.is_limp:
                 self.power_on_with_help()
@@ -100,6 +139,28 @@ class Arm:
         except Exception as e:
             print("  Didn't park (%s)." % e)
         return False
+
+    # ---------------- motion log ----------------
+    def _open_log(self):
+        try:
+            folder = os.path.join(config.LOGS_DIR, "motion")
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+            path = os.path.join(folder, time.strftime("%Y%m%d-%H%M%S") + ".log")
+            self._log_file = open(path, "a")
+        except Exception:
+            self._log_file = None
+
+    def log(self, event, **data):
+        if self._log_file is None:
+            return
+        try:
+            data["t"] = round(time.time(), 3)
+            data["event"] = event
+            self._log_file.write(json.dumps(data) + "\n")
+            self._log_file.flush()
+        except Exception:
+            pass
 
     # ---------------- where things are ----------------
     def set_board(self, frame):
@@ -118,45 +179,42 @@ class Arm:
         self.bus.Arm_serial_servo_write(servo_id, int(round(angle)), int(duration_ms))
 
     def read_servo(self, servo_id):
+        """
+        One servo's angle, or None. (Arm_Lib returns None when the angle is
+        outside 0-180, e.g. a joint pushed past its range. There is NO fallback:
+        v0.2.1 tried Arm_serial_servo_read_any, and a bad reading from it is the
+        likely cause of the 2026-10-24 crash.)
+        """
         for _ in range(3):
             value = self.bus.Arm_serial_servo_read(servo_id)
             if value is not None:
                 return float(value)
             time.sleep(0.05)
-        # Arm_Lib's normal read returns None whenever the angle is outside
-        # 0-180 -- e.g. a joint pushed past its range by hand. Its read_any()
-        # reports the same angle without that check. (Not for servo 5: its
-        # scale is different.) A raw "no data" reads as about -73: rejected.
-        if servo_id != 5 and hasattr(self.bus, "Arm_serial_servo_read_any"):
-            try:
-                value = self.bus.Arm_serial_servo_read_any(servo_id)
-            except Exception:
-                value = None
-            if value is not None and -40.0 <= value <= 220.0:
-                return float(value)
         return None
 
     def read_all(self):
         return [self.read_servo(i) for i in range(1, 7)]
 
-    def read_angles(self, samples=1):
+    def read_angles(self, samples=1, ids=(1, 2, 3, 4, 5, 6)):
         """
-        All six servo angles, each averaged over `samples` readings.
-        Averaging matters when teaching: a single reading can be off by a
-        degree, and one degree at the shoulder is ~3mm at the claw.
-        A servo that never answered comes back as None.
+        Servo angles (list of 6, None for unread ones), each averaged over
+        `samples` readings. Averaging matters when teaching: a single reading
+        can be off by a degree, and one degree at the shoulder is ~3mm at the claw.
         """
         totals = [0.0] * 6
         counts = [0] * 6
         for _ in range(samples):
-            for i, value in enumerate(self.read_all()):
+            for sid in ids:
+                value = self.read_servo(sid)
                 if value is not None:
-                    totals[i] += value
-                    counts[i] += 1
-            time.sleep(0.02)
+                    totals[sid - 1] += value
+                    counts[sid - 1] += 1
+            if samples > 1:
+                time.sleep(0.02)
         return [totals[i] / counts[i] if counts[i] else None for i in range(6)]
 
     def move_servos(self, angles, duration_ms=400, wait=True):
+        """Raw: sends angles, no read-back. Use _move_checked for servos 1-4."""
         for servo_id, angle in angles.items():
             self._check(servo_id, angle)
         for servo_id, angle in angles.items():
@@ -164,44 +222,96 @@ class Arm:
         if wait:
             time.sleep(duration_ms / 1000.0 + 0.05)
 
+    def _move_checked(self, angles, duration_ms):
+        """
+        Sends angles, waits, then reads servos 1-4 back. Any of them more than
+        STALL_DEG short of where it was sent = blocked: hold still right there
+        and raise ArmBlocked. Refuses to move at all while blocked.
+        """
+        self._ensure_not_blocked()
+        self.move_servos(angles, duration_ms=duration_ms)
+        ids = [sid for sid in angles if sid <= 4]
+        if not ids:
+            self.log("move", sent=angles, ms=duration_ms)
+            return
+        got = self.read_angles(samples=1, ids=(1, 2, 3, 4))
+        self.log("move", sent=angles, ms=duration_ms, got=got[:4])
+        for sid in ids:
+            if got[sid - 1] is None:
+                self._hold_still(got)
+                raise ArmBlocked("servo %d (%s) stopped answering during a move"
+                                 % (sid, SERVO_NAMES[sid]))
+            short = abs(got[sid - 1] - angles[sid])
+            if short > config.STALL_DEG:
+                self._hold_still(got)
+                raise ArmBlocked(
+                    "servo %d (%s) stopped %.0f degrees short of where it was sent -- "
+                    "something is in the way, or the arm wasn't where I thought"
+                    % (sid, SERVO_NAMES[sid], short))
+
+    def _ensure_not_blocked(self):
+        if self.blocked:
+            raise ArmBlocked("the last move was blocked -- not moving until you say "
+                             "the way is clear")
+
+    def _hold_still(self, got):
+        """Stop pushing: make every target where the servo actually is now."""
+        self.blocked = True
+        for sid in (1, 2, 3, 4):
+            if got[sid - 1] is not None:
+                self.bus.Arm_serial_servo_write(sid, int(round(got[sid - 1])), 300)
+        self.log("blocked", got=got[:4])
+
+    def clear_block(self):
+        """You checked the arm and the way is clear: allow moves again."""
+        self.blocked = False
+        self.log("unblocked")
+
     # ---------------- teaching by hand ----------------
     def limp(self):
         """Servo power off: the arm goes floppy. HOLD IT before calling this."""
         self.bus.Arm_serial_set_torque(0)
         self.is_limp = True
+        self.powered = False
+        self.log("limp")
 
     def stiffen_here(self, required=True):
         """
         Servo power on WITHOUT a jump. A servo switched on drives to its last
         target, which could be far from where the arm is now -- so first make
         every target "where you already are", then switch on.
+
+        Only if every reading of servos 1-4 is trustworthy (pose_problem). If
+        not: required -> RuntimeError; not required -> leave the power alone
+        and return False.
         """
         angles = self.read_angles(samples=3)
-        silent = silent_servos(angles)
-        if silent:
+        problem = pose_problem(angles)
+        if problem:
+            self.log("stiffen_refused", got=angles, why=problem)
             if required:
-                raise RuntimeError(silent + " didn't answer")
+                raise RuntimeError(problem)
             return False
         for servo_id, angle in enumerate(angles, start=1):
             if angle is None:          # wrist roll / claw: optional
                 print("  (%s didn't answer -- it may turn a little when power "
                       "comes on)" % SERVO_NAMES[servo_id])
                 continue
-            target = _clamp(servo_id, angle)
-            if abs(target - angle) > 2.0:
-                print("  (%s is at %.0f, past its safe range -- it will move back to "
-                      "%.0f when power comes on)" % (SERVO_NAMES[servo_id], angle, target))
-            self.bus.Arm_serial_servo_write(servo_id, int(round(target)), 800)
+            # within LIMIT_SLACK_DEG of a limit: nudge onto it (at most a few degrees)
+            self.bus.Arm_serial_servo_write(servo_id, int(round(_clamp(servo_id, angle))), 800)
         time.sleep(0.1)
         self.bus.Arm_serial_set_torque(1)
         time.sleep(0.9)
         self.is_limp = False
+        self.powered = True
+        self.log("stiffen", got=angles)
         return True
 
     def power_on_with_help(self):
         """
         Asks you to hold the arm, then powers on without a jump. If a servo
-        won't answer, you can keep trying or leave the power off (StillLimp).
+        can't be read or is out of range, you can keep trying or leave the
+        power off (StillLimp).
         """
         print("\nHOLD THE ARM -- servo power is coming back on.")
         input("Press Enter when you're holding it: ")
@@ -210,35 +320,35 @@ class Arm:
                 self.stiffen_here()
                 return
             except RuntimeError as e:
-                print("  %s. %s" % (e, OUT_OF_RANGE_HINT))
+                print("  Can't switch on yet: %s." % e)
+                print("  " + OUT_OF_RANGE_HINT)
                 ans = input("  Enter = try again   q = leave the power off and quit: ")
                 if ans.strip().lower() == "q":
                     raise StillLimp()
 
-    def lift_by_hand(self):
-        """No safe way to move by itself: you lift it, then it powers on there."""
-        print("\n  The arm is down near the board and every way out would sweep over it.")
-        input("  HOLD THE ARM and press Enter -- its power goes off: ")
-        self.limp()
-        input("  Lift it well above the board (roughly upright), keep holding, "
+    def lift_by_hand(self, why="the arm is down near the board and every way out "
+                              "would sweep over it"):
+        """You move the arm by hand (power off), then it powers on there."""
+        print("\n  I can't move by myself: %s." % why)
+        if not self.is_limp:
+            input("  HOLD THE ARM and press Enter -- its power goes off: ")
+            self.limp()
+        input("  Move it well above the board, roughly upright, keep holding, "
               "and press Enter: ")
         self.power_on_with_help()
 
     # ---------------- where are we ----------------
     def current_angles(self):
-        """All six angles (averaged). Raises if servos 1-4 can't be read."""
+        """All six angles (averaged). Raises if servos 1-4 can't be trusted."""
         angles = self.read_angles(samples=2)
-        silent = silent_servos(angles)
-        if silent:
-            raise RuntimeError(silent + " didn't answer -- can't tell where the arm is")
+        problem = pose_problem(angles)
+        if problem:
+            raise RuntimeError(problem + " -- can't tell where the arm is")
         return angles
 
     def current_xyz(self):
-        s = self.read_all()
-        silent = silent_servos(s)
-        if silent:
-            raise RuntimeError(silent + " didn't answer -- can't tell where the arm is")
-        x, y, z, _ = kinematics.forward(s[0], s[1], s[2], s[3])
+        a = self.current_angles()
+        x, y, z, _ = kinematics.forward(a[0], a[1], a[2], a[3])
         return (x, y, z)
 
     # ---------------- planning ----------------
@@ -261,22 +371,26 @@ class Arm:
 
     def run_plan(self, plan, duration_ms=None):
         """
-        Runs a straight-line plan. Its later steps are 10 mm apart, but the
-        FIRST step starts from wherever the arm really is -- if that's far
-        from the plan, it's a joint swing, so it gets simulated first.
+        Runs a straight-line plan, checking every step against the servos'
+        read-back. Its later steps are 10 mm apart, but the FIRST step starts
+        from wherever the arm really is -- if that's far from the plan, it's a
+        joint swing: simulated first, then done in small sub-steps.
         """
         if not plan:
             return
+        self._ensure_not_blocked()
         start = self.current_angles()
         first = [plan[0][i] for i in range(1, 5)]
+        duration_ms = duration_ms or config.STEP_MS
         if max(abs(first[i] - start[i]) for i in range(4)) > config.CONTINUOUS_DEG:
             ok, where = safety.check_transition(start[:4], first, self.zone)
             if not ok:
                 raise UnsafeMove("getting onto that path would swing the arm low over "
                                  "the board near (%.0f, %.0f, %.0f)" % where)
-        duration_ms = duration_ms or config.STEP_MS
+            self._run_stages(start, [dict(plan[0])])
+            plan = plan[1:]
         for servos in plan:
-            self.move_servos(servos, duration_ms=duration_ms)
+            self._move_checked(servos, duration_ms)
 
     def move_line(self, end, duration_ms=None):
         """Straight line from wherever we are to `end`. Checked before it moves."""
@@ -291,6 +405,7 @@ class Arm:
         that doesn't. If the arm is low over the board, it rises straight up
         first. Last resort: asks you to lift it (or raises UnsafeMove).
         """
+        self._ensure_not_blocked()
         for servo_id, angle in enumerate(pose, start=1):
             self._check(servo_id, angle)
         while True:
@@ -306,12 +421,26 @@ class Arm:
             self.lift_by_hand()
 
     def _run_stages(self, start, stages):
+        """
+        Runs joint-move stages in sub-steps of at most JOINT_SUBSTEP_DEG, each
+        checked against the read-back -- so if anything is in the way, the arm
+        stops within a couple of sub-steps instead of pushing for a whole move.
+        """
         current = list(start)
         for stage in stages:
-            turns = [abs(a - current[sid - 1]) for sid, a in stage.items()
-                     if current[sid - 1] is not None]
-            ms = max(config.JOINT_MIN_MS, int(max(turns or [0]) * config.JOINT_MS_PER_DEG))
-            self.move_servos(stage, duration_ms=ms)
+            joints = {sid: a for sid, a in stage.items()
+                      if sid <= 4 and current[sid - 1] is not None}
+            others = {sid: a for sid, a in stage.items() if sid not in joints}
+            begin = {sid: _clamp(sid, current[sid - 1]) for sid in joints}
+            biggest = max([abs(joints[s] - begin[s]) for s in joints] or [0.0])
+            n = max(1, int(math.ceil(biggest / config.JOINT_SUBSTEP_DEG)))
+            step_deg = biggest / n
+            ms = max(config.JOINT_MIN_MS, int(step_deg * config.JOINT_MS_PER_DEG))
+            for k in range(1, n + 1):
+                sub = {s: begin[s] + (joints[s] - begin[s]) * k / float(n) for s in joints}
+                if k == n:
+                    sub.update(others)
+                self._move_checked(sub, ms)
             for sid, a in stage.items():
                 current[sid - 1] = a
 
@@ -323,8 +452,32 @@ class Arm:
         """Joint move to the home pose: the taught look-at-board pose, or ready."""
         self.move_to_pose(self.home_pose)
 
-    def start_up(self):
-        """Run once at the start: wherever the arm is, get it home safely."""
+    def start_up(self, confirm=True):
+        """
+        Run once at the start. Makes sure every reading is trustworthy (else
+        you move the arm by hand), says where it thinks the claw is, waits for
+        your OK, then goes home in small checked steps.
+        """
+        while True:
+            angles = self.read_angles(samples=3)
+            problem = pose_problem(angles)
+            if problem is None:
+                break
+            print("\n  Can't trust where the arm is: %s." % problem)
+            print("  " + OUT_OF_RANGE_HINT)
+            self.lift_by_hand(why="I can't read the arm's position")
+        if not self.powered:
+            self.stiffen_here()
+            angles = self.current_angles()
+        x, y, z, _ = kinematics.forward(*angles[:4])
+        clear = safety.is_clear(angles, self.zone)
+        print("  I think the claw is at x=%.0f y=%.0f z=%.0f mm -- %s."
+              % (x, y, z, "clear of the board" if clear else "LOW, near the board"))
+        print("  (Standing straight up, z would be about %.0f. If this doesn't match "
+              "what you see, press Ctrl-C.)" % (config.H + config.L1 + config.L2 + config.L3))
+        if confirm:
+            input("  Enter = go home slowly: ")
+        self.log("start_up", got=angles)
         self.go_home()
 
     def can_plan_from_here(self):
@@ -337,11 +490,12 @@ class Arm:
     def lift_clear(self):
         """
         Rise straight up, up to TRAVEL_MM, starting from however the arm is
-        bent right now: each 10 mm step uses the joint solution nearest the
+        bent right now: each 5 mm step uses the joint solution nearest the
         previous one, so the hand only tilts gradually -- small nudges, never a
         swing. Use before any joint move when the claw might be near pieces.
         Returns how far it rose (0 if it couldn't).
         """
+        self._ensure_not_blocked()
         try:
             angles = self.current_angles()
         except RuntimeError:
@@ -441,8 +595,12 @@ class Arm:
 
     def park(self):
         """Lift clear of the board, then stand up straight -- if that's safe."""
+        if self.blocked:
+            return
         try:
             self.lift_clear()
+        except ArmBlocked:
+            raise
         except Exception:
             pass
         self.move_to_pose(config.POSE_REST, ask_for_help=False)

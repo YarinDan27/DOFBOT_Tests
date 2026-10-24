@@ -4,17 +4,20 @@ DOFBOT chess -- start here:
 
     cd ~/YDscripts/CNN_chess_project && python3 run.py
 
-On start the arm goes to its home pose: the look-at-board pose you taught
-(option 2), or the ready pose until you've taught one. Every joint move on the
-way is simulated first; if the arm is low over the board it rises straight up
-before anything else, and if it can't find a safe way it asks you to lift it.
+On start it says where it thinks the claw is and waits for your Enter before
+moving. Then it goes home -- the look-at-board pose you taught (option 2), or
+the ready pose until you've taught one -- slowly, in small steps, each checked
+against what the servos report back. If a joint falls short (something in the
+way, or the arm wasn't where the program thought), it stops and holds still.
+
+Ctrl-C never moves the arm: it stops right where it is. Option 8 parks and quits.
 
 This menu (and the sessions/ it starts) is the only code that connects the
 arm, the camera and the game. robot/, vision/ and game/ never import each
 other, so each can be tested on its own.
 """
 import config
-from robot.arm import Arm, OutOfReach, UnsafeMove
+from robot.arm import Arm, ArmBlocked, OutOfReach, UnsafeMove
 from robot.board_frame import BoardFrame, format_grid, is_square
 from sessions import look_pose, self_test, teach
 
@@ -27,9 +30,9 @@ def start_camera(state):
             camera = Camera()
             camera.start(stream=True)
             state["camera"] = camera
-            print("  Camera on. Watch live: " + camera.url())
         except Exception as e:
-            print("  Camera unavailable (%s). Carrying on without photos." % e)
+            print("  Camera unavailable: %s" % e)
+            print("  Carrying on without photos.")
     return state["camera"]
 
 
@@ -68,11 +71,7 @@ def hover_test(arm, frame):
     if sq is None:
         return
     x, y, z = frame.square_xyz(sq)
-    try:
-        arm.goto(x, y, z + config.HOVER_MM)
-    except (OutOfReach, UnsafeMove) as e:
-        print("  " + str(e))
-        return
+    arm.goto(x, y, z + config.HOVER_MM)
     input("  Hovering over %s. Is it centred? Press Enter to go back. " % sq)
     back_home(arm)
 
@@ -85,12 +84,36 @@ def move_piece_test(arm, frame):
     if dst is None:
         return
     input("  Moving %s -> %s. Keep hands clear and press Enter. " % (src, dst))
+    gripped = arm.move_piece(frame.square_xyz(src), frame.square_xyz(dst))
+    print("  " + ("Gripped something." if gripped else "Claw closed on nothing."))
+    back_home(arm)
+
+
+def report_block(e):
+    print("\n  STOPPED: %s." % e)
+    print("  The arm is holding still where it stopped. Look at it before doing "
+          "anything else.")
+    print("  (Every move is in logs/motion/ -- send me the newest file.)")
+
+
+def run_safely(arm, action, *args):
+    """Runs a menu action; a blocked move stops it cleanly instead of crashing."""
+    if arm.blocked:
+        print("\nThe last move was blocked, so the arm is holding still where it stopped.")
+        ans = input("Look at it. Is the way clear now? y = yes, carry on   "
+                    "anything else = no: ")
+        if ans.strip().lower() != "y":
+            return None
+        arm.clear_block()
     try:
-        gripped = arm.move_piece(frame.square_xyz(src), frame.square_xyz(dst))
-        print("  " + ("Gripped something." if gripped else "Claw closed on nothing."))
+        return action(*args)
+    except ArmBlocked as e:
+        report_block(e)
     except (OutOfReach, UnsafeMove) as e:
         print("  " + str(e))
-    back_home(arm)
+    except RuntimeError as e:
+        print("  Stopped: %s." % e)
+    return None
 
 
 def main():
@@ -105,13 +128,12 @@ def main():
         arm.set_board(state["frame"])
         if home:
             arm.home_pose = home
-        print("Going home -- keep hands clear...")
         try:
             arm.start_up()
+        except ArmBlocked as e:
+            report_block(e)
         except RuntimeError as e:
             print("Couldn't start: %s." % e)
-            print("If that joint is bent to its limit, ease it back toward the middle; "
-                  "otherwise check the arm's power and cable. Then run this again.")
             return
 
         while True:
@@ -121,24 +143,25 @@ def main():
             print("4. Reach map")
             print("5. Hover over one square")
             print("6. Move one piece")
-            print("7. Camera stream on/off")
-            print("8. Quit")
+            print("7. Camera on/off (shows which camera and its frame rate)")
+            print("8. Park and quit")
             try:
                 choice = input("Select: ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
+                arm.skip_park = True
                 break
 
             frame = state["frame"]
             if choice == "1":
-                new = teach.run(arm, start_camera(state))
+                new = run_safely(arm, teach.run, arm, start_camera(state))
                 if new is not None:
                     state["frame"] = new
                     arm.set_board(new)
             elif choice == "2":
-                look_pose.run(arm, start_camera(state))
+                run_safely(arm, look_pose.run, arm, start_camera(state))
             elif choice == "3":
-                self_test.run(arm, frame, start_camera(state))
+                run_safely(arm, self_test.run, arm, frame, start_camera(state))
             elif choice == "4":
                 if frame is None:
                     print("Teach the board first.")
@@ -150,12 +173,14 @@ def main():
                 if frame is None:
                     print("Teach the board first.")
                 elif choice == "5":
-                    hover_test(arm, frame)
+                    run_safely(arm, hover_test, arm, frame)
                 else:
-                    move_piece_test(arm, frame)
+                    run_safely(arm, move_piece_test, arm, frame)
             elif choice == "7":
                 if state["camera"] is None:
-                    start_camera(state)
+                    camera = start_camera(state)
+                    if camera is not None:
+                        print("  " + camera.stats())
                 else:
                     state["camera"].stop()
                     state["camera"] = None
@@ -169,4 +194,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nStopped. (Ctrl-C never moves the arm.)")
