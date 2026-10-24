@@ -7,7 +7,7 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -15,6 +15,7 @@ CALIBRATION_DIR = os.path.join(ROOT, "calibration")
 DATA_DIR = os.path.join(ROOT, "data")      # photos (git-ignored)
 LOGS_DIR = os.path.join(ROOT, "logs")      # session reports (git-ignored)
 BOARD_FILE = os.path.join(CALIBRATION_DIR, "board_arm.json")
+LOOK_POSE_FILE = os.path.join(CALIBRATION_DIR, "look_pose.json")
 
 # ---------- arm hardware (from the manufacturer's URDF; never changes) ----------
 H = 107.5          # table surface to shoulder pivot (servo 2), mm
@@ -59,11 +60,28 @@ POSE_REST = [90, 90, 90, 90, 90, CLAW_OPEN]
 # the "gripper pointing down" math can express; standing upright is not one.
 POSE_READY = [90, 90, 25, 25, 90, CLAW_OPEN]
 
+# ---------- collision check for joint moves (robot/safety.py) ----------
+CLEAR_MM = 60.0            # over the board, every part of the arm stays this high
+TABLE_CLEAR_MM = 5.0       # anywhere else, this high above the board surface
+ZONE_MARGIN_MM = 25.0      # the "over the board" area reaches this far past its edge
+NUDGE_MM = 15.0            # a part already low may still move this much (letting go)
+SIM_SAMPLES = 20           # points checked along each simulated joint move
+CONTINUOUS_DEG = 8.0       # bigger first step than this = a swing: check it
+LINE_TOL_MM = 5.0          # rising straight up: the claw may wander this far off the line
+# Before the board is taught: assume it could be anywhere in this area
+# (x from, x to, y from, y to, mm), at the height measured in the old project.
+DEFAULT_ZONE = (-170.0, 170.0, 70.0, 330.0)
+DEFAULT_BOARD_Z = -13.0
+JOINT_MS_PER_DEG = 14      # joint move speed: ~1.3 s for a 90 degree turn
+JOINT_MIN_MS = 400
+
 # ---------- motion planning ----------
 HOVER_MM = 45.0            # how high above a piece to hover before descending
 TRAVEL_MM = 80.0           # height above the board used for travelling across it
 STEP_MM = 10.0             # straight-line moves are cut into steps this long
 STEP_MS = 140              # milliseconds allowed per step
+LIFT_STEP_MM = 5.0         # rising straight up from wherever: smaller steps, so
+                           # even a stretched-out arm turns only a few degrees each
 APPROACH_STRAIGHT = 180.0  # hand pointing straight down
 APPROACH_MIN = 120.0       # most we'll let the hand tilt to reach far squares
 

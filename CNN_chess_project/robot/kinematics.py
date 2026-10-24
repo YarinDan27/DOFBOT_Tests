@@ -3,7 +3,8 @@
 Pure math. No hardware, no imports from the robot library.
 Runs anywhere, including your laptop.
 
-Carried over unchanged from old_chess_project (verified on the real arm).
+Carried over from old_chess_project (verified on the real arm). Only change:
+inverse() can now prefer the elbow solution closest to the current angles.
 
 Frame (standing behind the arm, looking at the board):
     X = right, Y = forward toward the board, Z = up
@@ -73,10 +74,13 @@ def solve_reachable(x, y, z):
     return None, None
 
 
-def inverse(x, y, z, approach_deg=180.0):
+def inverse(x, y, z, approach_deg=180.0, prefer=None):
     """
     Target point -> servo values.
     approach_deg is the hand's angle from vertical: 180 = pointing straight down.
+    prefer: optional [servo1..servo4] -- of the two elbow solutions, pick the
+    one closest to these angles (so a move continues smoothly from where the
+    arm already is). Without it: the elbow-forward one.
     Returns dict with servo1..4, or None if that target can't be reached.
     """
     r = math.hypot(x, y)
@@ -119,8 +123,11 @@ def inverse(x, y, z, approach_deg=180.0):
             4: tilt_to_servo(math.degrees(t4)),
         }
         if all(0.0 <= v <= 180.0 for v in servos.values()):
-            # prefer the elbow-forward solution (keeps it away from the electronics)
-            score = servos[2]
+            if prefer is None:
+                # elbow-forward solution (keeps it away from the electronics)
+                score = servos[2]
+            else:
+                score = sum(abs(servos[i] - prefer[i - 1]) for i in range(1, 5))
             if best is None or score < best[0]:
                 best = (score, servos)
     return best[1] if best else None

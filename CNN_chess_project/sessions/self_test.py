@@ -155,9 +155,9 @@ def run(arm, frame, camera=None):
     finally:
         try:
             arm.lift_clear()
-            arm.ready()
-        except Exception:
-            pass
+            arm.go_home()
+        except Exception as e:
+            print("  Couldn't get home automatically (%s). It's holding where it is." % e)
 
     summary = _summarise(results)
     photos = sum(1 for r in results.values() if r.get("photo"))

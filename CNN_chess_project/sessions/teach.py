@@ -160,20 +160,13 @@ def run(arm, camera=None):
             elif choice:
                 print("  Didn't understand %r." % choice)
     finally:
-        print("\nHOLD THE ARM -- servo power is coming back on.")
-        input("Press Enter when you're holding it: ")
-        while True:
-            try:
-                arm.stiffen_here()
-                break
-            except RuntimeError as e:
-                input("  %s. Press Enter to retry: " % e)
-        print("  Lifting clear of the board...")
+        arm.power_on_with_help()
+        print("  Rising straight up, then going home...")
         try:
             arm.lift_clear()
-            arm.ready()
+            arm.go_home()
         except Exception as e:
-            print("  Couldn't lift automatically (%s). It's holding where it is." % e)
+            print("  Couldn't get home automatically (%s). It's holding where it is." % e)
 
     if frame is None:
         print("Nothing saved.")
