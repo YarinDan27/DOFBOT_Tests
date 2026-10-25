@@ -17,7 +17,7 @@ arm, the camera and the game. robot/, vision/ and game/ never import each
 other, so each can be tested on its own.
 """
 import config
-from robot.arm import Arm, ArmBlocked, OutOfReach, UnsafeMove
+from robot.arm import Arm, ArmBlocked, OutOfReach, UnsafeMove, other_arm_programs
 from robot.board_frame import BoardFrame, format_grid, is_square
 from sessions import look_pose, self_test, teach
 
@@ -116,8 +116,41 @@ def run_safely(arm, action, *args):
     return None
 
 
+def only_program_on_the_arm():
+    """
+    Makes sure nothing else is driving the arm. Another copy of this program
+    can be stopped from here; Yahboom's ROS driver runs as root, so you stop it.
+    Returns False if you chose to quit.
+    """
+    import os
+    import signal
+    for pid, what, ours in other_arm_programs():
+        print("\n  Also talking to the arm: %s, pid %d." % (what, pid))
+        if ours:
+            ans = input("  Only one program may drive the arm. k = stop it and carry on   "
+                        "q = quit: ").strip().lower()
+            if ans != "k":
+                return False
+            try:
+                os.kill(pid, signal.SIGTERM)
+                print("  Stopped pid %d." % pid)
+            except OSError as e:
+                print("  Couldn't stop it (%s). Quit and run: kill %d" % (e, pid))
+                return False
+        else:
+            print("  It can send its own commands to the same servos and holds the camera.")
+            print("  Stop it first (until the next reboot) with:  sudo pkill -f arm.launch")
+            ans = input("  Enter = carry on anyway   q = quit: ").strip().lower()
+            if ans == "q":
+                return False
+    return True
+
+
 def main():
     print("\n=== DOFBOT Chess (CNN) v%s ===" % config.VERSION)
+    if not only_program_on_the_arm():
+        print("Bye!")
+        return
     state = {"frame": BoardFrame.load(), "camera": None}
     show_board(state["frame"])
     home = look_pose.load()

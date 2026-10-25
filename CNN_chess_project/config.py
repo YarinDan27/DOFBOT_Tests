@@ -7,7 +7,7 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +78,8 @@ JOINT_SUBSTEP_DEG = 5.0    # joint moves are cut into sub-steps this big, each c
 
 # ---------- read-back checks (robot/arm.py) ----------
 STALL_DEG = 6.0            # a servo this far short of where it was sent = blocked: stop
+IMPOSSIBLE_BELOW_MM = 40.0 # readings that put the arm this far under the board = a servo
+                           # is misreporting: don't move at all
 LIMIT_SLACK_DEG = 3.0      # a reading this far past a limit is still trusted (and nudged
                            # back onto it); further than that = don't power on or move
 

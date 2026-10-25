@@ -45,7 +45,9 @@ python3 tests/test_geometry.py && python3 tests/test_safety.py && python3 tests/
 **v0.2.2, after the arm drove into the board on 2026-10-24:**
 - **Start-up says where it thinks the claw is and waits for your Enter.** Standing upright, z should be about 423 mm. If what it says doesn't match what you see, press Ctrl-C.
 - **Every move is checked against the servos' read-back**, in small sub-steps (5° for joint moves). If a joint falls more than 6° short of where it was sent, because something is in the way or the arm isn't where the program thought, it **stops and holds still**. It won't move again until you say the way is clear.
-- **No power-on and no move from a reading it can't trust:** a servo that doesn't answer, or reads outside its safe range. You move the arm by hand instead. (v0.2.1's fallback read is gone; a bad reading from it is the likely cause of the crash.)
+- **No power-on and no move if a servo doesn't answer** — you move the arm by hand instead. (v0.2.1's fallback read is gone; a bad reading from it is the likely cause of the crash.) A joint past the robot's *move* limits is fine: power comes on holding it exactly there, and it comes back inside the limits in small checked steps (v0.2.4).
+- **Right after power-on, every servo must be where it said it was**, and the readings must make physical sense (no part of the arm under the table). Otherwise a servo is misreporting: it stops.
+- **Only one program on the arm.** At start it looks for Yahboom's ROS arm driver (`arm.launch`, started at boot) and for another copy of this program, which would send their own commands to the same servos and hold the camera. Stop the ROS driver with `sudo pkill -f arm.launch`.
 - **Ctrl-C never moves the arm.** Option 8 parks and quits.
 - Every command and read-back is logged in `logs/motion/`.
 - `python3 tests/test_arm.py` runs the real arm code against a simulated arm that stalls on the board and can misreport a servo. Nothing moves.

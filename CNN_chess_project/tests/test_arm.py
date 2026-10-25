@@ -90,7 +90,7 @@ for sid, bias in ((2, 25.0), (2, -25.0), (3, 30.0), (4, 40.0), (4, -40.0)):
                   ("HOLD THE ARM and press Enter", "", None),
                   ("Move it well above the board", "", None),
                   ("Press Enter when you're holding it", "", None),
-                  ("Enter = try again", "q", None)]
+                  ("Enter = try again", "q", None)] * 2
     a = arm_mod.Arm()
     outcome = "went home"
     try:
@@ -153,11 +153,30 @@ check("power stayed off-limits at first (no blind switch-on)", not a.powered)
 a.start_up()
 check("after you moved it, it starts and goes home", at(config.POSE_READY))
 
-print("\n--- 5. a reading outside the safe range: no power-on, no move ---")
+print("\n--- 5. a joint past the move limits: power on in place, come back in checked steps ---")
 Arm_Lib.reset([90, 90, 90, 178, 90, 150])     # wrist past its 170 limit
+before = dict(Arm_Lib.STATE["pos"])
 a = arm_mod.Arm()
-check("won't switch on from an out-of-range reading", not a.powered)
-check("message names the servo", "servo 4 (wrist)" in (arm_mod.pose_problem(a.read_angles(3)) or ""))
+check("switches on without moving (no jump)", a.powered and all(
+    abs(Arm_Lib.STATE["pos"][i] - before[i]) < 1.5 for i in range(1, 5)))
+ANSWERS[:] = [("Enter = go home slowly", "", None)]
+a.start_up()
+check("then goes home inside the limits", at(config.POSE_READY))
+check("without touching anything", Arm_Lib.STATE["contacts"] == 0)
+
+print("\n--- 5a. tonight's pose: left limp at a2, elbow at 4 ---")
+Arm_Lib.reset([118, 79, 4, 26, 89, 166])
+Arm_Lib.STATE["torque"] = False
+ANSWERS[:] = [("Enter = go home slowly", "", None),
+              ("HOLD THE ARM and press Enter", "", None),
+              ("Move it well above the board", "",
+               lambda: Arm_Lib.set_pose([118, 90, 90, 90, 89, 166])),
+              ("Press Enter when you're holding it", "", None)]
+a = arm_mod.Arm()
+check("switches on where it lies (no endless 'try again')", a.powered)
+a.start_up()
+check("gets home", at(config.POSE_READY))
+check("without pushing into the board", Arm_Lib.STATE["contacts"] == 0)
 
 print("\n--- 5b. teaching: an elbow past the robot's own limit is still recorded ---")
 from sessions import teach                                     # noqa: E402
@@ -167,10 +186,12 @@ a.limp()
 Arm_Lib.set_pose([90, 30, 4, 60, 90, 150])     # like a2 tonight: elbow at 4 (limit 10)
 point = teach._record(a, None, "a2", TMP)
 check("records the square instead of asking again", point is not None)
-check("power-on refuses from there (it would be a jump)",
-      arm_mod.pose_problem(a.read_angles(3)) is not None)
-check("and says which way to move it", "tilt it back up" in (arm_mod.pose_problem(
-      a.read_angles(3)) or ""))
+before = dict(Arm_Lib.STATE["pos"])
+a.stiffen_here()
+check("power comes back on right there, without moving", a.powered and all(
+    abs(Arm_Lib.STATE["pos"][i] - before[i]) < 1.5 for i in range(1, 5)))
+check("a look pose there would still be refused, with which way to move",
+      "tilt it back up" in (arm_mod.pose_problem(a.read_angles(3)) or ""))
 
 print("\n--- 6. Ctrl-C at the start question: nothing moves ---")
 Arm_Lib.reset(low_pose())
@@ -189,6 +210,20 @@ except KeyboardInterrupt:
     pass
 builtins.input = scripted_input
 check("arm didn't move", all(abs(Arm_Lib.STATE["pos"][i] - before[i]) < 3 for i in range(1, 5)))
+
+print("\n--- 6b. finds other programs talking to the arm ---")
+import subprocess                                              # noqa: E402
+ros = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                        "/tmp/arm.launch"])
+copy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "run.py"],
+                        cwd=config.ROOT)
+time.sleep = __import__("time").sleep
+__import__("time").sleep(0.5)
+found = arm_mod.other_arm_programs()
+ros.kill()
+copy.kill()
+check("spots Yahboom's ROS arm driver", any(p == ros.pid and not ours for p, _, ours in found))
+check("spots another copy of this program", any(p == copy.pid and ours for p, _, ours in found))
 
 print("\n--- 7. every move is logged ---")
 logs = os.listdir(os.path.join(TMP, "motion"))

@@ -11,9 +11,9 @@ Safety rules, all enforced here:
   4. every joint swing -- going home, parking, the jump at the start of a
      straight line -- is simulated by robot/safety.py first, and refused if
      any part of the arm would sweep over the board low
-  5. power comes on aimed at where the arm already is: no jump. If a servo
-     can't be read, or reads outside its safe range, power does NOT come on
-     and nothing moves -- you move the arm by hand instead
+  5. power comes on aimed at exactly where the arm already is: no jump, even
+     if a joint is past its move limits. If a servo can't be read, power does
+     NOT come on and nothing moves -- you move the arm by hand instead
   6. (v0.2.2) every move is checked against what the servos report back,
      in small sub-steps. If a joint falls short of where it was sent --
      something is in the way, or the arm isn't where the program thought --
@@ -117,6 +117,40 @@ def pose_problem(angles):
     return limit_problem(angles)
 
 
+def other_arm_programs():
+    """
+    Other programs that may be talking to the same servos (and camera):
+    [(pid, what, ours)] -- ours=True for another copy of this program (which
+    we can stop), False for something else (e.g. Yahboom's ROS driver, root).
+    Two programs on one arm means mixed-up readings and fighting commands.
+    """
+    found = []
+    me = os.getpid()
+    root = os.path.realpath(config.ROOT)
+    try:
+        pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        if pid in (me, os.getppid()):
+            continue
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            continue
+        if "arm.launch" in cmd or "dofbot_driver" in cmd or "arm_driver" in cmd:
+            found.append((pid, "Yahboom's ROS arm driver (%s)" % cmd[:70], False))
+        elif "python" in cmd and "run.py" in cmd:
+            try:
+                cwd = os.path.realpath(os.readlink("/proc/%d/cwd" % pid))
+            except OSError:
+                cwd = ""
+            if cwd == root:
+                found.append((pid, "another copy of this program (%s)" % cmd[:70], True))
+    return found
+
+
 def _distance(a, b):
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
@@ -141,9 +175,13 @@ class Arm:
         self.home_pose = list(config.POSE_READY)
         self._log_file = None
         self._open_log()
-        # Power on aimed at where it already is -- only if every reading is
-        # trustworthy. Otherwise nothing changes; start_up() deals with it.
-        self.stiffen_here(required=False)
+        # Power on aimed at where it already is -- only if servos 1-4 answer.
+        # Otherwise nothing changes; start_up() deals with it.
+        self.start_problem = None
+        try:
+            self.stiffen_here(required=False)
+        except ArmBlocked as e:
+            self.start_problem = e        # reported by start_up(), nothing more moves
 
     def __enter__(self):
         return self
@@ -242,23 +280,28 @@ class Arm:
                 time.sleep(0.02)
         return [totals[i] / counts[i] if counts[i] else None for i in range(6)]
 
-    def move_servos(self, angles, duration_ms=400, wait=True):
-        """Raw: sends angles, no read-back. Use _move_checked for servos 1-4."""
-        for servo_id, angle in angles.items():
-            self._check(servo_id, angle)
+    def move_servos(self, angles, duration_ms=400, wait=True, check=True):
+        """
+        Raw: sends angles, no read-back. Use _move_checked for servos 1-4.
+        check=False only for sub-steps on the way back INTO the safe range
+        from a pose past it (the end target itself is always checked).
+        """
+        if check:
+            for servo_id, angle in angles.items():
+                self._check(servo_id, angle)
         for servo_id, angle in angles.items():
             self.bus.Arm_serial_servo_write(servo_id, int(round(angle)), int(duration_ms))
         if wait:
             time.sleep(duration_ms / 1000.0 + 0.05)
 
-    def _move_checked(self, angles, duration_ms):
+    def _move_checked(self, angles, duration_ms, check=True):
         """
         Sends angles, waits, then reads servos 1-4 back. Any of them more than
         STALL_DEG short of where it was sent = blocked: hold still right there
         and raise ArmBlocked. Refuses to move at all while blocked.
         """
         self._ensure_not_blocked()
-        self.move_servos(angles, duration_ms=duration_ms)
+        self.move_servos(angles, duration_ms=duration_ms, check=check)
         ids = [sid for sid in angles if sid <= 4]
         if not ids:
             self.log("move", sent=angles, ms=duration_ms)
@@ -310,13 +353,16 @@ class Arm:
         target, which could be far from where the arm is now -- so first make
         every target "where you already are", then switch on.
 
-        Only if every reading of servos 1-4 is trustworthy (pose_problem). If
-        not: required -> RuntimeError; not required -> leave the power alone
-        and return False.
+        Needs servos 1-4 to answer. A pose past the robot's move limits is
+        fine: the servos are told to stay exactly where they are, so nothing
+        moves -- getting back inside the limits is a separate, checked move.
+        If a servo is silent: required -> RuntimeError; not required -> leave
+        the power alone and return False.
         """
         angles = self.read_angles(samples=3)
-        problem = pose_problem(angles)
-        if problem:
+        silent = silent_servos(angles)
+        if silent:
+            problem = silent + " didn't answer. " + OUT_OF_RANGE_HINT
             self.log("stiffen_refused", got=angles, why=problem)
             if required:
                 raise RuntimeError(problem)
@@ -326,14 +372,27 @@ class Arm:
                 print("  (%s didn't answer -- it may turn a little when power "
                       "comes on)" % SERVO_NAMES[servo_id])
                 continue
-            # within LIMIT_SLACK_DEG of a limit: nudge onto it (at most a few degrees)
-            self.bus.Arm_serial_servo_write(servo_id, int(round(_clamp(servo_id, angle))), 800)
+            # exactly where it is -- even past a move limit: holding still is safe
+            self.bus.Arm_serial_servo_write(servo_id, int(round(angle)), 800)
         time.sleep(0.1)
         self.bus.Arm_serial_set_torque(1)
         time.sleep(0.9)
         self.is_limp = False
         self.powered = True
         self.log("stiffen", got=angles)
+        # Every servo should now be exactly where it said it was. If one isn't,
+        # its reading was wrong (it just moved to the wrong angle) or something
+        # is pressing on the arm. Don't chase it: hold, and stop everything.
+        after = self.read_angles(samples=1, ids=(1, 2, 3, 4))
+        for sid in (1, 2, 3, 4):
+            if after[sid - 1] is None or abs(after[sid - 1] - angles[sid - 1]) > config.STALL_DEG:
+                self.blocked = True
+                self.log("stiffen_mismatch", told=angles[:4], got=after[:4])
+                raise ArmBlocked(
+                    "right after power-on, servo %d (%s) reads %s but was told to stay at "
+                    "%.0f -- its reading is wrong, or something is pressing on the arm"
+                    % (sid, SERVO_NAMES[sid], "nothing" if after[sid - 1] is None
+                       else "%.0f" % after[sid - 1], angles[sid - 1]))
         return True
 
     def power_on_with_help(self):
@@ -368,11 +427,12 @@ class Arm:
 
     # ---------------- where are we ----------------
     def current_angles(self):
-        """All six angles (averaged). Raises if servos 1-4 can't be trusted."""
+        """All six angles (averaged). Raises if any of servos 1-4 didn't answer."""
         angles = self.read_angles(samples=2)
-        problem = pose_problem(angles)
-        if problem:
-            raise RuntimeError("can't move from here -- " + problem)
+        silent = silent_servos(angles)
+        if silent:
+            raise RuntimeError("can't tell where the arm is -- %s didn't answer. %s"
+                               % (silent, OUT_OF_RANGE_HINT))
         return angles
 
     def current_xyz(self):
@@ -457,10 +517,14 @@ class Arm:
         """
         current = list(start)
         for stage in stages:
+            for sid, angle in stage.items():
+                self._check(sid, angle)          # every END target is inside the limits
             joints = {sid: a for sid, a in stage.items()
                       if sid <= 4 and current[sid - 1] is not None}
             others = {sid: a for sid, a in stage.items() if sid not in joints}
-            begin = {sid: _clamp(sid, current[sid - 1]) for sid in joints}
+            # start from where the servo really is -- even past a limit -- so the
+            # path is exactly the one safety.py simulated
+            begin = {sid: current[sid - 1] for sid in joints}
             biggest = max([abs(joints[s] - begin[s]) for s in joints] or [0.0])
             n = max(1, int(math.ceil(biggest / config.JOINT_SUBSTEP_DEG)))
             step_deg = biggest / n
@@ -469,7 +533,9 @@ class Arm:
                 sub = {s: begin[s] + (joints[s] - begin[s]) * k / float(n) for s in joints}
                 if k == n:
                     sub.update(others)
-                self._move_checked(sub, ms)
+                # in-between values lie between the start and a checked target,
+                # so they're only outside the limits on the way back in
+                self._move_checked(sub, ms, check=False)
             for sid, a in stage.items():
                 current[sid - 1] = a
 
@@ -487,20 +553,34 @@ class Arm:
         you move the arm by hand), says where it thinks the claw is, waits for
         your OK, then goes home in small checked steps.
         """
+        if self.start_problem is not None:
+            raise self.start_problem
         while True:
             angles = self.read_angles(samples=3)
-            problem = pose_problem(angles)
-            if problem is None:
+            silent = silent_servos(angles)
+            if silent is None:
                 break
-            print("\n  Can't start from here: %s" % problem)
-            self.lift_by_hand(why="I can't move safely from where the arm is")
+            print("\n  Can't start from here: %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
+            self.lift_by_hand(why="I can't read where the arm is")
         if not self.powered:
             self.stiffen_here()
             angles = self.current_angles()
         x, y, z, _ = kinematics.forward(*angles[:4])
+        lowest = min(p[2] for p in safety.link_points(angles))
+        if lowest < self.zone.board_z - config.IMPOSSIBLE_BELOW_MM:
+            self.log("impossible_pose", got=angles, lowest=lowest)
+            raise RuntimeError(
+                "the servo readings put part of the arm %.0f mm under the table, which "
+                "can't be true -- a servo is reporting a wrong angle, so I won't move. "
+                "Readings: %s" % (self.zone.board_z - lowest,
+                                  ", ".join("%s %.0f" % (SERVO_NAMES[i + 1], angles[i])
+                                            for i in range(4))))
         clear = safety.is_clear(angles, self.zone)
         print("  I think the claw is at x=%.0f y=%.0f z=%.0f mm -- %s."
               % (x, y, z, "clear of the board" if clear else "LOW, near the board"))
+        for sid, a, low, high in outside_limits(angles):
+            print("  (%s is at %.0f, past the %.0f-%.0f it moves in -- I'll bring it "
+                  "back in small checked steps)" % (SERVO_NAMES[sid], a, low, high))
         print("  (Standing straight up, z would be about %.0f. If this doesn't match "
               "what you see, press Ctrl-C.)" % (config.H + config.L1 + config.L2 + config.L3))
         if confirm:
