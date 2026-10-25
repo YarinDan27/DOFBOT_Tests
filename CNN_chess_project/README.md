@@ -10,7 +10,7 @@ cd ~/YDscripts/CNN_chess_project && python3 run.py
 
 On start, the arm goes **home**: the look-at-board pose you taught (option 2), or the ready pose until then. If it's low over the board (for example where it fell when the power went off), it rises straight up first.
 
-1. **Teach the board by hand.** The servos switch off and you push the claw onto 5 squares. At each one the program reads the joint angles and takes a photo, so the camera sees the claw in the right place. It fits the board to your touches and flags any touch that disagrees with the rest, so you redo just that one.
+1. **Teach the board by hand.** The servos switch off and you push the claw onto 5 squares (default b3 g3 b6 g6 e5 -- rank 1 and 2 are too close to the base to teach with the claw straight down). At each one the program reads the joint angles and takes a photo, so the camera sees the claw in the right place. It fits the board to your touches and flags any touch that disagrees with the rest, so you redo just that one.
 2. **Teach the look-at-board pose.** The servos switch off; hold the arm where the camera sees the whole board (watch the stream), press Enter. The arm starts here and returns here after every job.
 3. **Self-test.** The robot hovers over squares by itself, reads its joints back, and reports how far off it is on each one, as a map of the board. Every photo is saved for the camera check.
 4. **Reach map / hover / move one piece** (4–6) to check it with your own eyes.

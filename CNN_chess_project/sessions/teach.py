@@ -46,23 +46,33 @@ def _record(arm, camera, square, photo_dir):
     angles = arm.read_angles(samples=config.TEACH_READS)
     silent = silent_servos(angles)
     if silent:
-        print("  %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
-        print("  (That square may be beyond the arm's reach -- type s to skip it.)")
+        print("  %s can't report its angle: your hand has bent it past the end of "
+              "its 0-180 scale." % silent)
+        if angles[3] is None:
+            print("  Tilt the claw a little (lean the hand toward or away from the "
+                  "base) and press Enter again --")
+            print("  only where the claw TIP is matters, not the angle it's held at.")
+        else:
+            print("  This square is very close to (or far from) the base for the arm. "
+                  "Try a slightly different arm shape,")
+            print("  or type s to skip it -- other squares will do.")
         return None
-    x, y, z, _ = kinematics.forward(*angles[:4])
+    x, y, z, approach = kinematics.forward(*angles[:4])
     photo = None
     if camera is not None:
         path = camera.save_photo(os.path.join(photo_dir, square + ".jpg"))
         if path:
             photo = os.path.relpath(path, config.ROOT)
-    print("  %s: x=%.0f y=%.0f z=%.0f mm%s"
-          % (square, x, y, z, "" if photo else "   (no photo)"))
-    # Past the robot's own move limits is fine for MEASURING the board -- the
-    # reach map will show the robot can't go there by itself.
-    for sid, a, low, high in outside_limits(angles):
-        print("  (recorded -- note: %s is at %.0f, past the %.0f-%.0f the robot "
-              "moves in, so it won't reach %s by itself)"
-              % (SERVO_NAMES[sid], a, low, high, square))
+    # The tilt is a check on the readings: if you're holding the claw straight
+    # down and this says 20 degrees, a servo's reading (or the model) is off.
+    print("  %s: x=%.0f y=%.0f z=%.0f mm, claw tilted %.0f deg from straight down%s"
+          % (square, x, y, z, abs(180.0 - approach), "" if photo else "   (no photo)"))
+    # Past the robot's own move limits is fine for MEASURING the board: only
+    # the claw tip's position is used. When the robot goes there itself it
+    # picks its own joint angles; the reach map says whether it can.
+    if outside_limits(angles):
+        print("  (good -- the joint angles you used are outside the range the robot "
+              "moves in, but only the tip's position counts)")
     return {"xyz": [x, y, z], "servos": angles, "photo": photo}
 
 
