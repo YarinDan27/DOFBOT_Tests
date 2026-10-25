@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """
-Teach the look-at-board pose: where the arm waits, with the camera seeing the
-whole board. The arm goes here every time run.py starts, and comes back here
-after every job.
+Teach the look-at-board view -- hands-free at the arm.
 
-Servos off, you move the arm while watching the camera stream, Enter saves.
-Saved to calibration/look_pose.json, plus a photo of the view in data/look/.
+This is where the arm waits ("home"), with the camera seeing the whole board.
+The arm comes back here after every job.
+
+At the arm: after the long beep (power off), hold the arm up HIGH with the
+camera looking down at the whole board, and hold still for LOOK_HOLD_S
+seconds. Blue light = this pose is usable, keep still; red = not usable
+(too low over the board, or a joint past its range) -- move it.
+Long beep = saved, and the arm holds itself there.
+
+Saved to calibration/look_pose.json, plus a photo of the view in data/look/
+so you can check it afterwards.
 """
 import json
+import math
 import os
 import time
 
 import config
 from robot import kinematics, safety
-from robot.arm import OUT_OF_RANGE_HINT, pose_problem, silent_servos
+from robot.arm import ArmBlocked, FIX_BY_HAND, SERVO_NAMES, pose_problem
 
 
 def load():
@@ -52,69 +60,120 @@ def _problem(angles, zone):
     return None
 
 
-def run(arm, camera=None):
-    print("\n--- Teach the look-at-board pose ---")
-    print("The servos switch off and you hold the arm where the camera sees the whole board.")
-    if camera is None:
-        print("  (camera off -- you won't be able to see what it sees)")
-    else:
-        print("  Watch what the camera sees: " + camera.url())
-    input("HOLD THE ARM with one hand and press Enter. It will go limp. ")
-    arm.limp()
+def check_pose(angles, zone):
+    """Why these angles can't be the look pose, or None if they can."""
+    return pose_problem(angles) or _problem(angles, zone)
 
-    pose = None
-    try:
-        while True:
-            ans = arm.live_prompt("\nMove it until the camera sees the WHOLE board, with a "
-                                  "little margin.\n      Enter = save this pose   q = cancel   "
-                                  "(the line below is live)").strip().lower()
-            if ans == "q":
-                break
-            angles = arm.read_angles(samples=config.TEACH_READS)
-            silent = silent_servos(angles)
-            if silent:
-                print("  %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
-                continue
-            if angles[4] is None:
-                angles[4] = config.CENTER       # wrist roll didn't answer: face forward
-            angles[5] = config.CLAW_OPEN
-            problem = pose_problem(angles) or _problem(angles, arm.zone)
-            if problem:
-                print("  " + problem)
-                continue
-            pose = [round(a, 1) for a in angles]
-            break
-    except KeyboardInterrupt:
-        raise                       # Ctrl-C: power stays off, nothing moves
-    except Exception:
-        arm.power_on_with_help()
-        raise
-    arm.power_on_with_help()
 
-    if pose is None:
-        print("Nothing saved.")
-        return None
-
-    arm.move_to_pose(pose)          # settle exactly on the saved angles
+def save_pose(pose, camera=None):
+    """Writes calibration/look_pose.json (+ a photo of the view). Returns the photo path."""
     photo = None
     if camera is not None:
         session = time.strftime("%Y%m%d-%H%M%S")
         path = camera.save_photo(os.path.join(config.DATA_DIR, "look", session + ".jpg"))
         if path:
             photo = os.path.relpath(path, config.ROOT)
-
     if not os.path.isdir(config.CALIBRATION_DIR):
         os.makedirs(config.CALIBRATION_DIR)
     x, y, z, _ = kinematics.forward(*pose[:4])
     with open(config.LOOK_POSE_FILE, "w") as fh:
-        json.dump({"servos": pose,
+        json.dump({"servos": [round(float(a), 1) for a in pose],
                    "claw_tip_mm": [round(x, 1), round(y, 1), round(z, 1)],
                    "photo": photo,
                    "saved": time.strftime("%Y-%m-%d %H:%M:%S")}, fh, indent=2)
+    return photo
+
+
+def run(arm, camera=None):
+    """Hands-free. Returns the saved pose, or None."""
+    from sessions.teach import BLUE, OFF, RED, _Light, _Stillness, _end_line, _show, countdown
+
+    print("\n--- Teach the look-at-board view (hands-free at the arm) ---")
+    print("At the arm:")
+    print("  * wait for the LONG beep -- be holding the arm by then (power goes off)")
+    print("  * move it up HIGH, camera looking down at the whole board, and hold still %.0f s"
+          % config.LOOK_HOLD_S)
+    print("  * blue light = usable, keep still; red = not usable here (too low, or a joint")
+    print("    past its range) -- move it")
+    print("  * long beep = saved, the arm holds itself there")
+    if camera is None:
+        print("  (camera off: no photo of the view this time)")
+    countdown(arm, config.TEACH_COUNTDOWN_S)
+
+    still = _Stillness()
+    light = _Light(arm)
+    screen = {}
+    last_motion = time.time()
+    pose = None
+    # It only saves once you've moved the arm away from where power went off
+    # (so a pause before you start isn't saved as the view).
+    first = arm.read_angles(samples=1, ids=(1, 2, 3, 4))
+    start_tip = (None if any(a is None for a in first[:4])
+                 else list(kinematics.forward(*first[:4])[:3]))
+    while True:
+        now = time.time()
+        angles = arm.read_angles(samples=1)
+        silent = [s for s in (1, 2, 3, 4) if angles[s - 1] is None]
+        if silent:
+            light.set(RED)
+            still.reset()
+            _show("  %s can't report -- %s" % (SERVO_NAMES[silent[0]], FIX_BY_HAND[silent[0]]),
+                  screen)
+        else:
+            candidate = list(angles)
+            if candidate[4] is None:
+                candidate[4] = config.CENTER
+            candidate[5] = config.CLAW_OPEN
+            problem = check_pose(candidate, arm.zone)
+            tip = list(kinematics.forward(*angles[:4])[:3])
+            held = still.update(tip, now)
+            if held == 0.0:
+                last_motion = now
+            if start_tip is not None and math.sqrt(sum(
+                    (tip[k] - start_tip[k]) ** 2 for k in range(3))) < config.AUTO_MIN_MOVE_MM:
+                light.set(BLUE)
+                _show("  move the arm to where the camera sees the whole board", screen)
+            elif problem:
+                light.set(RED)
+                _show("  not usable: %s" % problem, screen)
+            else:
+                light.set(BLUE)
+                _show("  usable -- hold still %.1f/%.0f s" % (min(held, config.LOOK_HOLD_S),
+                                                             config.LOOK_HOLD_S), screen)
+                if held >= config.LOOK_HOLD_S:
+                    pose = [round(a, 1) for a in candidate]
+                    break
+        if now - last_motion > config.TEACH_IDLE_S:
+            _end_line(screen)
+            print("  Nothing moved for %.0f s -- stopping, nothing saved." % config.TEACH_IDLE_S)
+            break
+        time.sleep(config.TEACH_TICK_S)
+    _end_line(screen)
+    light.set(BLUE)
+    try:
+        powered = arm.power_on_when_readable(timeout=config.FINISH_POWER_ON_S, show=True)
+    except ArmBlocked as e:
+        print("  Power is on, but: %s. It's holding still." % e)
+        powered = True
+    if not powered:
+        light.set(RED)
+        arm.beep(3)
+        print("  Couldn't switch power back on -- the arm is still floppy. Lay it down gently.")
+        if pose is not None:
+            save_pose(pose, camera)
+            arm.home_pose = pose
+            print("  (The view was saved anyway.)")
+        return pose
+    light.set(OFF)
+    if pose is None:
+        arm.beep(2)
+        return None
+    photo = save_pose(pose, camera)
     arm.home_pose = pose
-    print("\nSaved: " + os.path.relpath(config.LOOK_POSE_FILE, config.ROOT)
-          + "  (claw tip at x=%.0f y=%.0f z=%.0f mm)" % (x, y, z))
+    arm.beep(long=True)
+    x, y, z, _ = kinematics.forward(*pose[:4])
+    print("  Saved the look-at-board view (claw at x=%.0f y=%.0f z=%.0f mm). The arm holds "
+          "itself there." % (x, y, z))
     if photo:
-        print("View saved: " + photo)
-    print("The arm will start here from now on.")
+        print("  What the camera sees from there: %s" % photo)
     return pose

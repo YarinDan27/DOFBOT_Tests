@@ -15,7 +15,8 @@ import random
 
 from robot import safety
 
-STATE = {"pos": {i: 90.0 for i in range(1, 7)}, "torque": True, "contacts": 0}
+STATE = {"pos": {i: 90.0 for i in range(1, 7)}, "torque": True, "contacts": 0,
+         "beeps": [], "lights": []}   # beeps: 100 ms units per beep; lights: (r, g, b)
 READ_BIAS = {}          # servo id -> degrees added to every reading
 SILENT = set()          # servo ids that never answer
 BOARD = {"z": -13.0, "x": (-120.0, 120.0), "y": (90.0, 290.0)}   # the real board
@@ -26,6 +27,8 @@ def reset(pose=(90, 90, 90, 90, 90, 150)):
     set_pose(pose)
     STATE["torque"] = True
     STATE["contacts"] = 0
+    STATE["beeps"] = []
+    STATE["lights"] = []
     READ_BIAS.clear()
     SILENT.clear()
 
@@ -75,3 +78,12 @@ class Arm_Device:
                       + random.gauss(0, 0.3)))
         top = 270 if servo_id == 5 else 180
         return v if 0 <= v <= top else None
+
+    def Arm_Buzzer_On(self, delay=0xff):
+        STATE["beeps"].append(delay)
+
+    def Arm_Buzzer_Off(self):
+        pass
+
+    def Arm_RGB_set(self, red, green, blue):
+        STATE["lights"].append((red, green, blue))

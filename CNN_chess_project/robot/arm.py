@@ -26,6 +26,7 @@ replayed afterwards.
 import json
 import math
 import os
+import threading
 import time
 
 import config
@@ -179,6 +180,8 @@ class Arm:
         self.powered = False        # True once stiffen_here() has switched on safely
         self.blocked = False
         self.skip_park = False      # set when you quit with Ctrl-C: no moving on the way out
+        self.stop_event = threading.Event()   # STOP button: checked before every sub-step
+        self.interactive = True     # False: never stop to ask in the terminal (run.py)
         self.zone = safety.Zone.default()
         self.home_pose = list(config.POSE_READY)
         self._log_file = None
@@ -203,7 +206,11 @@ class Arm:
                   "still where it stopped.")
             return False
         if exc_type is KeyboardInterrupt or self.skip_park:
-            print("\n  Not parking (you pressed Ctrl-C). The arm is holding still.")
+            if exc_type is KeyboardInterrupt:
+                print("\n  Not parking (you pressed Ctrl-C). The arm is holding still.")
+            return False
+        if self.is_limp and not self.interactive:
+            print("\n  Servo power is OFF -- the arm is floppy. Lay it down gently.")
             return False
         try:
             if self.is_limp:
@@ -309,6 +316,9 @@ class Arm:
         and raise ArmBlocked. Refuses to move at all while blocked.
         """
         self._ensure_not_blocked()
+        if self.stop_event.is_set():
+            self._hold_still(self.read_angles(samples=1, ids=(1, 2, 3, 4)))
+            raise ArmBlocked("you pressed STOP")
         self.move_servos(angles, duration_ms=duration_ms, check=check)
         ids = [sid for sid in angles if sid <= 4]
         if not ids:
@@ -345,7 +355,66 @@ class Arm:
     def clear_block(self):
         """You checked the arm and the way is clear: allow moves again."""
         self.blocked = False
+        self.stop_event.clear()
         self.log("unblocked")
+
+    # ---------------- feedback you can see/hear at the arm ----------------
+    def beep(self, times=1, long=False):
+        """
+        Beeps on the arm's buzzer (if the board has one): `times` short beeps,
+        or one long one. This is how the arm talks to you when you're standing
+        at it, away from the computer.
+        """
+        if not hasattr(self.bus, "Arm_Buzzer_On"):
+            return
+        # Arm_Buzzer_On(n) sounds for n x 100 ms, then stops by itself
+        units = 6 if long else 1
+        for i in range(1 if long else max(1, int(times))):
+            try:
+                self.bus.Arm_Buzzer_On(units)
+            except Exception:
+                return
+            time.sleep(units * 0.1 + 0.2)
+
+    def power_on_when_readable(self, timeout=None, show=True):
+        """
+        Switches power on in place -- holding still, no jump -- as soon as
+        servos 1-4 all report. No Enter needed. Shows what's missing while it
+        waits. Returns True once powered, False if `timeout` seconds pass.
+        ArmBlocked passes through (a servo didn't stay where it said it was).
+        """
+        start = time.time()
+        width = 0
+        while True:
+            angles = self.read_angles(samples=1, ids=(1, 2, 3, 4))
+            silent = [s for s in (1, 2, 3, 4) if angles[s - 1] is None]
+            if not silent:
+                try:
+                    self.stiffen_here()
+                except RuntimeError:
+                    silent = [s for s in (1, 2, 3, 4)]
+                else:
+                    if show and width:
+                        print()
+                    return True
+            if show:
+                line = "  waiting: %s can't report -- %s" % (
+                    SERVO_NAMES[silent[0]], FIX_BY_HAND[silent[0]])
+                print("\r" + line.ljust(width), end="", flush=True)
+                width = max(width, len(line))
+            if timeout is not None and time.time() - start > timeout:
+                if show and width:
+                    print()
+                return False
+            time.sleep(0.3)
+
+    def light(self, red, green, blue):
+        """The arm's RGB light (if the board has one)."""
+        try:
+            if hasattr(self.bus, "Arm_RGB_set"):
+                self.bus.Arm_RGB_set(int(red), int(green), int(blue))
+        except Exception:
+            pass
 
     # ---------------- teaching by hand ----------------
     def limp(self):
@@ -494,48 +563,113 @@ class Arm:
 
     # ---------------- planning ----------------
     @staticmethod
-    def plan_line(start, end):
-        """Straight line in space -> list of servo settings. Raises if any point fails."""
+    def _smooth_solution(point, prev):
+        """
+        Servo angles for `point` that follow on smoothly from `prev` (servos
+        1-4): no joint turns more than LINE_MAX_TURN_DEG. Of those, the
+        smallest turn (a hand pointing more nearly straight down breaks ties).
+        None if none is smooth.
+        """
+        best = None
+        app = config.APPROACH_STRAIGHT
+        while app >= config.APPROACH_MIN - 1e-9:
+            sol = kinematics.inverse(point[0], point[1], point[2], approach_deg=app,
+                                     prefer=prev)
+            if sol is not None and kinematics.within_limits(sol):
+                turn = max(abs(sol[k] - prev[k - 1]) for k in range(1, 5))
+                score = turn + 0.02 * (config.APPROACH_STRAIGHT - app)
+                if turn <= config.LINE_MAX_TURN_DEG and (best is None or score < best[0]):
+                    best = (score, sol)
+            app -= 2.0
+        return best[1] if best else None
+
+    @staticmethod
+    def _follow(a, b, prev, depth=3):
+        """
+        Smooth servo settings from point a (where the arm has angles `prev`)
+        to point b: one step if it can, otherwise split in half (up to `depth`
+        times) -- close to the base the joints turn a lot per mm. None if no
+        smooth way.
+        """
+        sol = Arm._smooth_solution(b, prev)
+        if sol is not None:
+            return [sol]
+        if depth <= 0:
+            return None
+        mid = tuple((a[j] + b[j]) / 2.0 for j in range(3))
+        first = Arm._follow(a, mid, prev, depth - 1)
+        if first is None:
+            return None
+        second = Arm._follow(mid, b, [first[-1][k] for k in range(1, 5)], depth - 1)
+        if second is None:
+            return None
+        return first + second
+
+    @staticmethod
+    def plan_line(start, end, prev=None, swing_first=True):
+        """
+        Straight line in space -> list of servo settings. Every step follows
+        on smoothly from the one before (no joint turns more than
+        LINE_MAX_TURN_DEG in one step -- no sudden elbow flip halfway).
+        prev = the angles (servos 1-4) the line starts from. If the first step
+        can't follow on smoothly from them and swing_first is True, it may be
+        a joint swing instead (run_plan simulates that one and runs it in
+        sub-steps). Raises OutOfReach if any point can't be reached smoothly.
+        """
         dist = _distance(start, end)
         steps = max(1, int(math.ceil(dist / config.STEP_MM)))
         plan = []
+        here = tuple(start)
         for i in range(1, steps + 1):
             f = i / float(steps)
             point = tuple(start[j] + (end[j] - start[j]) * f for j in range(3))
-            servos, _ = kinematics.solve_reachable(*point)
-            if servos is None:
+            part = Arm._follow(here, point, prev) if prev is not None else None
+            if part is None and not plan and (prev is None or swing_first):
+                servos, _ = kinematics.solve_reachable(*point)
+                part = [servos] if servos is not None else None
+            if part is None:
                 raise OutOfReach(
-                    "path passes through (%.0f, %.0f, %.0f) which can't be reached"
-                    % point)
-            plan.append(servos)
+                    "path passes through (%.0f, %.0f, %.0f) which can't be reached "
+                    "smoothly" % point)
+            plan.extend(part)
+            prev = [part[-1][k] for k in range(1, 5)]
+            here = point
         return plan
+
+    @staticmethod
+    def _last(plan):
+        return [plan[-1][k] for k in range(1, 5)]
 
     def run_plan(self, plan, duration_ms=None):
         """
         Runs a straight-line plan, checking every step against the servos'
-        read-back. Its later steps are 10 mm apart, but the FIRST step starts
-        from wherever the arm really is -- if that's far from the plan, it's a
-        joint swing: simulated first, then done in small sub-steps.
+        read-back. Steps are 10 mm apart, but the FIRST step starts from
+        wherever the arm really is -- if that's far from the plan, it's a
+        joint swing: simulated first, then done in small sub-steps. (Any
+        other big step -- there shouldn't be one -- is treated the same way.)
         """
         if not plan:
             return
         self._ensure_not_blocked()
-        start = self.current_angles()
-        first = [plan[0][i] for i in range(1, 5)]
+        prev = self.current_angles()[:4]
         duration_ms = duration_ms or config.STEP_MS
-        if max(abs(first[i] - start[i]) for i in range(4)) > config.CONTINUOUS_DEG:
-            ok, where = safety.check_transition(start[:4], first, self.zone)
-            if not ok:
-                raise UnsafeMove("getting onto that path would swing the arm low over "
-                                 "the board near (%.0f, %.0f, %.0f)" % where)
-            self._run_stages(start, [dict(plan[0])])
-            plan = plan[1:]
         for servos in plan:
-            self._move_checked(servos, duration_ms)
+            target = [servos[k] for k in range(1, 5)]
+            if max(abs(target[i] - prev[i]) for i in range(4)) > config.CONTINUOUS_DEG:
+                ok, where = safety.check_transition(prev, target, self.zone)
+                if not ok:
+                    raise UnsafeMove("getting onto that path would swing the arm low over "
+                                     "the board near (%.0f, %.0f, %.0f)" % where)
+                self._run_stages(prev, [dict(servos)])
+            else:
+                self._move_checked(servos, duration_ms)
+            prev = target
 
     def move_line(self, end, duration_ms=None):
         """Straight line from wherever we are to `end`. Checked before it moves."""
-        plan = self.plan_line(self.current_xyz(), end)
+        angles = self.current_angles()
+        start = kinematics.forward(*angles[:4])[:3]
+        plan = self.plan_line(start, end, prev=angles[:4])
         self.run_plan(plan, duration_ms)
 
     # ---------------- joint moves (simulated first) ----------------
@@ -557,8 +691,9 @@ class Arm:
             if stages is not None:
                 self._run_stages(start, stages)
                 return
-            if not ask_for_help:
-                raise UnsafeMove("no safe way to move from here")
+            if not ask_for_help or not self.interactive:
+                raise UnsafeMove("no safe way to move from here -- power off, lift the "
+                                 "arm up by hand (wrist straight), then power on")
             self.lift_by_hand()
 
     def _run_stages(self, start, stages):
@@ -620,15 +755,9 @@ class Arm:
             self.stiffen_here()
             angles = self.current_angles()
         x, y, z, _ = kinematics.forward(*angles[:4])
-        lowest = min(p[2] for p in safety.link_points(angles))
-        if lowest < self.zone.board_z - config.IMPOSSIBLE_BELOW_MM:
-            self.log("impossible_pose", got=angles, lowest=lowest)
-            raise RuntimeError(
-                "the servo readings put part of the arm %.0f mm under the table, which "
-                "can't be true -- a servo is reporting a wrong angle, so I won't move. "
-                "Readings: %s" % (self.zone.board_z - lowest,
-                                  ", ".join("%s %.0f" % (SERVO_NAMES[i + 1], angles[i])
-                                            for i in range(4))))
+        problem = self.reading_problem(angles)
+        if problem:
+            raise RuntimeError(problem + ", so I won't move")
         clear = safety.is_clear(angles, self.zone)
         print("  I think the claw is at x=%.0f y=%.0f z=%.0f mm -- %s."
               % (x, y, z, "clear of the board" if clear else "LOW, near the board"))
@@ -641,6 +770,25 @@ class Arm:
             input("  Enter = go home slowly: ")
         self.log("start_up", got=angles)
         self.go_home()
+
+    def reading_problem(self, angles):
+        """
+        Why these readings can't be trusted to move from, or None: a servo
+        that didn't answer, or angles that would put part of the arm under
+        the table (a servo misreporting).
+        """
+        silent = [s for s in (1, 2, 3, 4) if angles[s - 1] is None]
+        if silent:
+            return "the %s can't report its angle -- %s" % (SERVO_NAMES[silent[0]],
+                                                             FIX_BY_HAND[silent[0]])
+        lowest = min(p[2] for p in safety.link_points(angles))
+        if lowest < self.zone.board_z - config.IMPOSSIBLE_BELOW_MM:
+            self.log("impossible_pose", got=angles, lowest=lowest)
+            return ("the servo readings put part of the arm %.0f mm under the table, which "
+                    "can't be true -- a servo is reporting a wrong angle (readings: %s)"
+                    % (self.zone.board_z - lowest,
+                       ", ".join("%s %.0f" % (SERVO_NAMES[i + 1], angles[i]) for i in range(4))))
+        return None
 
     def can_plan_from_here(self):
         try:
@@ -726,14 +874,25 @@ class Arm:
             self.ready()
         try:
             return self._goto(x, y, z)
-        except UnsafeMove:
-            # Getting onto the path from here would swing low (e.g. from an
-            # unusual home pose). From the ready pose that jump is high up.
+        except (UnsafeMove, OutOfReach):
+            # No smooth safe route from here (e.g. from an unusual home pose,
+            # or straight across close to the base). From the ready pose --
+            # high, in the middle -- there usually is one.
+            if self._near(config.POSE_READY):
+                raise
             self.ready()
             return self._goto(x, y, z)
 
+    def _near(self, pose, tol=3.0):
+        try:
+            angles = self.current_angles()
+        except RuntimeError:
+            return False
+        return max(abs(angles[i] - pose[i]) for i in range(4)) <= tol
+
     def _goto(self, x, y, z):
-        start = self.current_xyz()
+        angles = self.current_angles()
+        start = kinematics.forward(*angles[:4])[:3]
         target = (x, y, z)
 
         highest = z + config.TRAVEL_MM
@@ -743,9 +902,11 @@ class Arm:
             try:
                 up = (start[0], start[1], height)
                 across = (x, y, height)
-                plan = (self.plan_line(start, up)
-                        + self.plan_line(up, across)
-                        + self.plan_line(across, target))
+                rise = self.plan_line(start, up, prev=angles[:4])
+                over = self.plan_line(up, across, prev=self._last(rise), swing_first=False)
+                down = self.plan_line(across, target, prev=self._last(over),
+                                      swing_first=False)
+                plan = rise + over + down
             except OutOfReach:
                 height -= 10.0
                 continue

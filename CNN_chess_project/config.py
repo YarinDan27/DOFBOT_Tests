@@ -7,7 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.2.6"
+VERSION = "2.4.2"
+VERSION_NOTE = ("hands-free teaching at the arm (hold still to record, beeps + light), "
+                "no start-up questions, coloured board map, camera test")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +90,8 @@ HOVER_MM = 45.0            # how high above a piece to hover before descending
 TRAVEL_MM = 80.0           # height above the board used for travelling across it
 STEP_MM = 10.0             # straight-line moves are cut into steps this long
 STEP_MS = 140              # milliseconds allowed per step
+LINE_MAX_TURN_DEG = 6.0    # no joint turns more than this in one 10 mm step (no
+                           # sudden elbow flip halfway along a line)
 LIFT_STEP_MM = 5.0         # rising straight up from wherever: smaller steps, so
                            # even a stretched-out arm turns only a few degrees each
 APPROACH_STRAIGHT = 180.0  # hand pointing straight down
@@ -101,6 +105,23 @@ APPROACH_MIN = 120.0       # most we'll let the hand tilt to reach far squares
 TEACH_SQUARES = ["b3", "g3", "b6", "g6", "e5"]
 TEACH_READS = 5             # servo readings averaged per taught square
 TEACH_MAX_RESIDUAL_MM = 4.0 # a touch further than this from the fitted board is probably off
+
+# Hands-free at the arm: you put the CLOSED claw tip on top of a piece and hold still.
+TEACH_COUNTDOWN_S = 15      # time to walk from the computer to the arm before power goes off
+TEACH_TICK_S = 0.25         # how often it reads the arm while you teach
+STILL_S = 2.0               # hold the claw still this long to record a square
+STILL_MM = 8.0              # "still" = the tip stays within this of one spot (a
+                            # 1-degree reading wobble alone moves it ~4 mm)
+AUTO_MIN_MOVE_MM = 20.0     # after a record, move at least this far before the next one
+AUTO_MAX_Z_MM = 150.0       # higher than this = you've lifted the claw away, not teaching
+PAUSE_HOLD_S = 4.0          # lift high and hold still this long = stop teaching (power on)
+TEACH_IDLE_S = 120.0        # nothing moves for this long = you left: stop, power on in place
+FINISH_POWER_ON_S = 20.0    # at the end, wait up to this long for every joint to report
+LOOK_HOLD_S = 3.0           # look-at-board view: hold still this long to save it
+TEACH_START_SQUARE = "e5"   # before power goes off, the arm comes down low over this square...
+TEACH_START_ABOVE_MM = 40.0 # ...this far above it, so it can't fall far
+TEACH_START_XYZ = (0.0, 190.0, 90.0)   # (same, before any board is known)
+GRAB_BELOW_TOP_MM = 15.0    # taught heights are piece TOPS; grabbing goes this far below
 
 # ---------- self-test (sessions/self_test.py) ----------
 SETTLE_S = 0.6              # wait after arriving before measuring
