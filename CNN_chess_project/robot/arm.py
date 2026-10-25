@@ -70,6 +70,14 @@ def silent_servos(angles, ids=(1, 2, 3, 4)):
 OUT_OF_RANGE_HINT = ("A servo can't report its angle while its joint is pushed past "
                      "0-180 degrees -- ease that joint back toward the middle.")
 
+# What to physically do when a servo can't report (its joint is past 0-180).
+FIX_BY_HAND = {
+    1: "turn the base back toward the middle",
+    2: "bring the upper arm back toward upright",
+    3: "move the elbow back toward the middle of its swing",
+    4: "straighten the wrist -- line the claw up with the forearm",
+}
+
 
 def outside_limits(angles):
     """[(servo, angle, low, high)] for servos 1-4 past config.SERVO_LIMITS (+ slack)."""
@@ -362,7 +370,8 @@ class Arm:
         angles = self.read_angles(samples=3)
         silent = silent_servos(angles)
         if silent:
-            problem = silent + " didn't answer. " + OUT_OF_RANGE_HINT
+            first = [s for s in (1, 2, 3, 4) if angles[s - 1] is None][0]
+            problem = "%s can't report its angle -- %s" % (silent, FIX_BY_HAND[first])
             self.log("stiffen_refused", got=angles, why=problem)
             if required:
                 raise RuntimeError(problem)
@@ -395,24 +404,67 @@ class Arm:
                        else "%.0f" % after[sid - 1], angles[sid - 1]))
         return True
 
+    def live_status(self):
+        """
+        One line describing what the servos say right now: the claw tip and
+        its tilt if everything answers, otherwise which joint to move and how.
+        Returns (line, ready).
+        """
+        angles = self.read_angles(samples=1, ids=(1, 2, 3, 4))
+        joints = "  ".join("%s %s" % (SERVO_NAMES[s], "--" if angles[s - 1] is None
+                                      else "%.0f" % angles[s - 1]) for s in (1, 2, 3, 4))
+        silent = [s for s in (1, 2, 3, 4) if angles[s - 1] is None]
+        if silent:
+            return "%s  | %s" % (joints, FIX_BY_HAND[silent[0]]), False
+        x, y, z, approach = kinematics.forward(*angles[:4])
+        return ("%s  | claw x=%.0f y=%.0f z=%.0f, tilt %.0f deg  | ready"
+                % (joints, x, y, z, abs(180.0 - approach))), True
+
+    def live_prompt(self, prompt):
+        """
+        Asks `prompt` while showing the servo readings live, updated a few
+        times a second, so you can see the moment a joint becomes readable.
+        Returns what you typed. (Not a terminal, e.g. in tests: plain input.)
+        """
+        import select
+        import sys
+        try:
+            interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        except (AttributeError, ValueError):
+            interactive = False
+        if not interactive:
+            return input(prompt)
+        print(prompt)
+        width = 0
+        while True:
+            line, _ = self.live_status()
+            line = "  " + line
+            sys.stdout.write("\r" + line.ljust(width))
+            sys.stdout.flush()
+            width = max(width, len(line))
+            ready, _, _ = select.select([sys.stdin], [], [], 0.3)
+            if ready:
+                typed = sys.stdin.readline()
+                sys.stdout.write("\n")
+                return typed.rstrip("\n")
+
     def power_on_with_help(self):
         """
-        Asks you to hold the arm, then powers on without a jump. If a servo
-        can't be read or is out of range, you can keep trying or leave the
-        power off (StillLimp).
+        Asks you to hold the arm, then powers on without a jump. While it waits
+        it shows the readings live and says which joint to move if one can't
+        report. You can leave the power off instead (StillLimp).
         """
         print("\nHOLD THE ARM -- servo power is coming back on.")
-        input("Press Enter when you're holding it: ")
         while True:
+            ans = self.live_prompt("  Hold it. When the line below says 'ready', press Enter "
+                                   "(q = leave the power off and quit):")
+            if ans.strip().lower() == "q":
+                raise StillLimp()
             try:
                 self.stiffen_here()
                 return
             except RuntimeError as e:
-                print("  Can't switch on yet: %s" % e)
-                ans = input("  Move it, keep holding, then: Enter = try again   "
-                            "q = leave the power off and quit: ")
-                if ans.strip().lower() == "q":
-                    raise StillLimp()
+                print("  Not yet: %s" % e)
 
     def lift_by_hand(self, why="the arm is down near the board and every way out "
                               "would sweep over it"):
@@ -421,8 +473,8 @@ class Arm:
         if not self.is_limp:
             input("  HOLD THE ARM and press Enter -- its power goes off: ")
             self.limp()
-        input("  Move it well above the board, roughly upright, keep holding, "
-              "and press Enter: ")
+        self.live_prompt("  Move it well above the board, roughly upright, with the wrist "
+                         "straight. Keep holding, then press Enter:")
         self.power_on_with_help()
 
     # ---------------- where are we ----------------
@@ -560,7 +612,9 @@ class Arm:
             silent = silent_servos(angles)
             if silent is None:
                 break
-            print("\n  Can't start from here: %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
+            first = [s for s in (1, 2, 3, 4) if angles[s - 1] is None][0]
+            print("\n  Can't start from here: %s can't report its angle (bent past the "
+                  "end of its scale). Fix: %s." % (silent, FIX_BY_HAND[first]))
             self.lift_by_hand(why="I can't read where the arm is")
         if not self.powered:
             self.stiffen_here()

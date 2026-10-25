@@ -65,8 +65,9 @@ def run(arm, camera=None):
     pose = None
     try:
         while True:
-            ans = input("\nMove it until the camera sees the WHOLE board, with a little "
-                        "margin.\n      Enter = save this pose   q = cancel: ").strip().lower()
+            ans = arm.live_prompt("\nMove it until the camera sees the WHOLE board, with a "
+                                  "little margin.\n      Enter = save this pose   q = cancel   "
+                                  "(the line below is live)").strip().lower()
             if ans == "q":
                 break
             angles = arm.read_angles(samples=config.TEACH_READS)

@@ -50,12 +50,13 @@ def _record(arm, camera, square, photo_dir):
               "its 0-180 scale." % silent)
         if angles[3] is None:
             print("  Tilt the claw a little (lean the hand toward or away from the "
-                  "base) and press Enter again --")
+                  "base) until the live line says 'ready' --")
             print("  only where the claw TIP is matters, not the angle it's held at.")
         else:
             print("  This square is very close to (or far from) the base for the arm. "
                   "Try a slightly different arm shape,")
             print("  or type s to skip it -- other squares will do.")
+        print("  If you skip it, straighten the joint before the next square.")
         return None
     x, y, z, approach = kinematics.forward(*angles[:4])
     photo = None
@@ -132,9 +133,10 @@ def run(arm, camera=None):
         i = 0
         while i < len(squares):
             sq = squares[i]
-            ans = input("\n[%d/%d] Open the claw around the piece on %s, at grabbing height.\n"
-                        "      Enter = record   r = redo previous   s = skip: "
-                        % (i + 1, len(squares), sq.upper())).strip().lower()
+            ans = arm.live_prompt(
+                "\n[%d/%d] Open the claw around the piece on %s, at grabbing height.\n"
+                "      Enter = record   r = redo previous   s = skip   "
+                "(the line below is live)" % (i + 1, len(squares), sq.upper())).strip().lower()
             if ans == "s":
                 print("  skipped " + sq)
                 i += 1
@@ -172,8 +174,8 @@ def run(arm, camera=None):
                 frame = None
                 break
             if is_square(choice):
-                input("  Put a piece on %s and open the claw around it at grabbing "
-                      "height, then press Enter: " % choice.upper())
+                arm.live_prompt("  Put a piece on %s and open the claw around it at "
+                                "grabbing height, then press Enter:" % choice.upper())
                 point = _record(arm, camera, choice, photo_dir)
                 if point is not None:
                     taught[choice] = point

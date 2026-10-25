@@ -7,7 +7,7 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))

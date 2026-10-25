@@ -89,8 +89,8 @@ for sid, bias in ((2, 25.0), (2, -25.0), (3, 30.0), (4, 40.0), (4, -40.0)):
     ANSWERS[:] = [("Enter = go home slowly", "", None),
                   ("HOLD THE ARM and press Enter", "", None),
                   ("Move it well above the board", "", None),
-                  ("Press Enter when you're holding it", "", None),
-                  ("Enter = try again", "q", None)] * 2
+                  ("says 'ready'", "", None),
+                  ("says 'ready'", "q", None)] * 2
     a = arm_mod.Arm()
     outcome = "went home"
     try:
@@ -146,7 +146,7 @@ def lift_and_fix():
 
 ANSWERS[:] = [("HOLD THE ARM and press Enter", "", None),
               ("Move it well above the board", "", lift_and_fix),
-              ("Press Enter when you're holding it", "", None),
+              ("says 'ready'", "", None),
               ("Enter = go home slowly", "", None)]
 a = arm_mod.Arm()
 check("power stayed off-limits at first (no blind switch-on)", not a.powered)
@@ -171,7 +171,7 @@ ANSWERS[:] = [("Enter = go home slowly", "", None),
               ("HOLD THE ARM and press Enter", "", None),
               ("Move it well above the board", "",
                lambda: Arm_Lib.set_pose([118, 90, 90, 90, 89, 166])),
-              ("Press Enter when you're holding it", "", None)]
+              ("says 'ready'", "", None)]
 a = arm_mod.Arm()
 check("switches on where it lies (no endless 'try again')", a.powered)
 a.start_up()
