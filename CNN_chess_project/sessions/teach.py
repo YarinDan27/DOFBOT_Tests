@@ -19,7 +19,7 @@ import time
 
 import config
 from robot import kinematics
-from robot.arm import OUT_OF_RANGE_HINT, pose_problem
+from robot.arm import OUT_OF_RANGE_HINT, SERVO_NAMES, outside_limits, silent_servos
 from robot.board_frame import BoardFrame, format_grid, is_square
 
 
@@ -44,9 +44,9 @@ def _ask_squares():
 def _record(arm, camera, square, photo_dir):
     """Reads where the claw is right now and photographs it."""
     angles = arm.read_angles(samples=config.TEACH_READS)
-    problem = pose_problem(angles)
-    if problem:
-        print("  %s. %s" % (problem, OUT_OF_RANGE_HINT))
+    silent = silent_servos(angles)
+    if silent:
+        print("  %s didn't answer. %s" % (silent, OUT_OF_RANGE_HINT))
         print("  (That square may be beyond the arm's reach -- type s to skip it.)")
         return None
     x, y, z, _ = kinematics.forward(*angles[:4])
@@ -57,6 +57,12 @@ def _record(arm, camera, square, photo_dir):
             photo = os.path.relpath(path, config.ROOT)
     print("  %s: x=%.0f y=%.0f z=%.0f mm%s"
           % (square, x, y, z, "" if photo else "   (no photo)"))
+    # Past the robot's own move limits is fine for MEASURING the board -- the
+    # reach map will show the robot can't go there by itself.
+    for sid, a, low, high in outside_limits(angles):
+        print("  (recorded -- note: %s is at %.0f, past the %.0f-%.0f the robot "
+              "moves in, so it won't reach %s by itself)"
+              % (SERVO_NAMES[sid], a, low, high, square))
     return {"xyz": [x, y, z], "servos": angles, "photo": photo}
 
 

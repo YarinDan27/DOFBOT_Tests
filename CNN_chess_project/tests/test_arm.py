@@ -159,6 +159,19 @@ a = arm_mod.Arm()
 check("won't switch on from an out-of-range reading", not a.powered)
 check("message names the servo", "servo 4 (wrist)" in (arm_mod.pose_problem(a.read_angles(3)) or ""))
 
+print("\n--- 5b. teaching: an elbow past the robot's own limit is still recorded ---")
+from sessions import teach                                     # noqa: E402
+Arm_Lib.reset()
+a = arm_mod.Arm()
+a.limp()
+Arm_Lib.set_pose([90, 30, 4, 60, 90, 150])     # like a2 tonight: elbow at 4 (limit 10)
+point = teach._record(a, None, "a2", TMP)
+check("records the square instead of asking again", point is not None)
+check("power-on refuses from there (it would be a jump)",
+      arm_mod.pose_problem(a.read_angles(3)) is not None)
+check("and says which way to move it", "tilt it back up" in (arm_mod.pose_problem(
+      a.read_angles(3)) or ""))
+
 print("\n--- 6. Ctrl-C at the start question: nothing moves ---")
 Arm_Lib.reset(low_pose())
 before = dict(Arm_Lib.STATE["pos"])

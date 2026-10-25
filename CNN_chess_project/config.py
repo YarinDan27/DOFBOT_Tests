@@ -7,7 +7,7 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -110,6 +110,7 @@ QUICK_SQUARES = ["a1", "d1", "h1", "a4", "e4", "h4", "a6", "d6", "h6",
 # ---------- camera ----------
 CAMERA_INDEX = 0           # tried first; every other /dev/video* is tried after it
 CAMERA_FREE_DEVICE = True  # on start, stop other programs holding the camera (fuser)
+CAMERA_RELEASE_S = 2.0     # wait after freeing it (and between tries) for the device to let go
 WEB_PORT = 8080
 CAM_WIDTH = 640     # smaller frames compress faster; try 320 if it's still slow
 CAM_HEIGHT = 480

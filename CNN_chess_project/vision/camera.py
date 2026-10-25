@@ -78,11 +78,12 @@ def free_cameras(devices):
     "device busy" problem, done automatically (what `sudo fuser -k` would do,
     but only for your own programs, and saying what it stopped).
     """
+    freed = 0
     for device in devices:
         pids = _holders(device)
         if pids is None:
             print("  (can't check who holds the camera: 'fuser' isn't installed)")
-            return
+            return freed
         for pid in pids:
             name = _process_name(pid)
             try:
@@ -103,6 +104,8 @@ def free_cameras(devices):
                     pass
             print("  Freed the camera: stopped '%s' (pid %d), which was holding %s"
                   % (name, pid, device))
+            freed += 1
+    return freed
 
 
 def _backends():
@@ -210,23 +213,30 @@ class Camera:
         if self.running:
             return
         devices = video_devices()
-        if config.CAMERA_FREE_DEVICE:
-            free_cameras(devices)
+        if config.CAMERA_FREE_DEVICE and free_cameras(devices):
+            time.sleep(config.CAMERA_RELEASE_S)    # a stopped program takes a moment to let go
 
         order = [self.index] + [n for n in device_numbers(devices) if n != self.index]
         tried = []
-        for index in order:
-            for backend, name in _backends():
-                found = _try_open(index, backend)
-                tried.append("/dev/video%d via %s" % (index, name))
-                if found is not None:
-                    self.cap, first = found
-                    self.index = index
-                    self.description = "/dev/video%d via %s, %dx%d" % (
-                        index, name, first.shape[1], first.shape[0])
-                    with _lock:
-                        _latest["frame"] = first
-                        _latest["count"] += 1
+        for attempt in range(2):
+            if attempt:
+                print("  Camera not ready yet -- trying again in %.0f s..."
+                      % config.CAMERA_RELEASE_S)
+                time.sleep(config.CAMERA_RELEASE_S)
+            for index in order:
+                for backend, name in _backends():
+                    found = _try_open(index, backend)
+                    tried.append("/dev/video%d via %s" % (index, name))
+                    if found is not None:
+                        self.cap, first = found
+                        self.index = index
+                        self.description = "/dev/video%d via %s, %dx%d" % (
+                            index, name, first.shape[1], first.shape[0])
+                        with _lock:
+                            _latest["frame"] = first
+                            _latest["count"] += 1
+                        break
+                if self.cap is not None:
                     break
             if self.cap is not None:
                 break

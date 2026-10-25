@@ -67,25 +67,54 @@ def silent_servos(angles, ids=(1, 2, 3, 4)):
     return " and ".join("servo %d (%s)" % (i, SERVO_NAMES[i]) for i in silent)
 
 
+OUT_OF_RANGE_HINT = ("A servo can't report its angle while its joint is pushed past "
+                     "0-180 degrees -- ease that joint back toward the middle.")
+
+
+def outside_limits(angles):
+    """[(servo, angle, low, high)] for servos 1-4 past config.SERVO_LIMITS (+ slack)."""
+    out = []
+    for sid in (1, 2, 3, 4):
+        a = angles[sid - 1]
+        if a is None:
+            continue
+        low, high = config.SERVO_LIMITS[sid]
+        if a < low - config.LIMIT_SLACK_DEG or a > high + config.LIMIT_SLACK_DEG:
+            out.append((sid, a, low, high))
+    return out
+
+
+def _which_way(sid, too_low):
+    if sid == 1:
+        return "turn the base back toward the middle"
+    if too_low:
+        return "that joint is bent too far toward the board -- tilt it back up a little"
+    return ("that joint is bent too far back, toward the electronics -- tilt it "
+            "forward a little")
+
+
+def limit_problem(angles):
+    """
+    Text if a servo is past the range the ROBOT may move in (SERVO_LIMITS), or
+    None. Fine for measuring (teaching); not fine to power on or move from.
+    """
+    bad = outside_limits(angles)
+    if not bad:
+        return None
+    sid, a, low, high = bad[0]
+    return ("servo %d (%s) is at %.0f, past the robot's safe range %.0f-%.0f: %s"
+            % (sid, SERVO_NAMES[sid], a, low, high, _which_way(sid, a < low)))
+
+
 def pose_problem(angles):
     """
-    Why these readings can't be trusted to move from, or None if they're fine:
-    a servo that didn't answer, or one outside its safe range.
+    Why these readings can't be trusted to power on or move from, or None:
+    a servo that didn't answer, or one past its safe range. Includes what to do.
     """
     silent = silent_servos(angles)
     if silent:
-        return silent + " didn't answer"
-    for sid in (1, 2, 3, 4):
-        low, high = config.SERVO_LIMITS[sid]
-        a = angles[sid - 1]
-        if a < low - config.LIMIT_SLACK_DEG or a > high + config.LIMIT_SLACK_DEG:
-            return ("servo %d (%s) is at %.0f, outside its safe range %.0f-%.0f"
-                    % (sid, SERVO_NAMES[sid], a, low, high))
-    return None
-
-
-OUT_OF_RANGE_HINT = ("A servo can't report its angle while its joint is pushed past "
-                     "its range -- ease that joint back toward the middle.")
+        return silent + " didn't answer. " + OUT_OF_RANGE_HINT
+    return limit_problem(angles)
 
 
 def _distance(a, b):
@@ -320,9 +349,9 @@ class Arm:
                 self.stiffen_here()
                 return
             except RuntimeError as e:
-                print("  Can't switch on yet: %s." % e)
-                print("  " + OUT_OF_RANGE_HINT)
-                ans = input("  Enter = try again   q = leave the power off and quit: ")
+                print("  Can't switch on yet: %s" % e)
+                ans = input("  Move it, keep holding, then: Enter = try again   "
+                            "q = leave the power off and quit: ")
                 if ans.strip().lower() == "q":
                     raise StillLimp()
 
@@ -343,7 +372,7 @@ class Arm:
         angles = self.read_angles(samples=2)
         problem = pose_problem(angles)
         if problem:
-            raise RuntimeError(problem + " -- can't tell where the arm is")
+            raise RuntimeError("can't move from here -- " + problem)
         return angles
 
     def current_xyz(self):
@@ -463,9 +492,8 @@ class Arm:
             problem = pose_problem(angles)
             if problem is None:
                 break
-            print("\n  Can't trust where the arm is: %s." % problem)
-            print("  " + OUT_OF_RANGE_HINT)
-            self.lift_by_hand(why="I can't read the arm's position")
+            print("\n  Can't start from here: %s" % problem)
+            self.lift_by_hand(why="I can't move safely from where the arm is")
         if not self.powered:
             self.stiffen_here()
             angles = self.current_angles()
