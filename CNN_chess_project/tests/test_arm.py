@@ -215,15 +215,23 @@ print("\n--- 6b. finds other programs talking to the arm ---")
 import subprocess                                              # noqa: E402
 ros = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
                         "/tmp/arm.launch"])
-copy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "run.py"],
-                        cwd=config.ROOT)
+fake_copy = os.path.join(TMP, "copy", "run.py")      # a script called run.py ...
+os.makedirs(os.path.dirname(fake_copy))
+with open(fake_copy, "w") as fh:
+    fh.write("import time\ntime.sleep(30)\n")
+copy = subprocess.Popen([sys.executable, fake_copy], cwd=config.ROOT)   # ... run from here
+shell = subprocess.Popen(["sh", "-c", "sleep 30 # python3 run.py arm.launch"],
+                         cwd=config.ROOT)              # only mentions them: not a program
 time.sleep = __import__("time").sleep
 __import__("time").sleep(0.5)
 found = arm_mod.other_arm_programs()
 ros.kill()
 copy.kill()
+shell.kill()
 check("spots Yahboom's ROS arm driver", any(p == ros.pid and not ours for p, _, ours in found))
 check("spots another copy of this program", any(p == copy.pid and ours for p, _, ours in found))
+check("ignores a command that only mentions run.py / arm.launch",
+      not any(p == shell.pid for p, _, _ in found))
 
 print("\n--- 7. every move is logged ---")
 logs = os.listdir(os.path.join(TMP, "motion"))

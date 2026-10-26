@@ -113,13 +113,24 @@ def banner():
     print("Last fix: %s" % config.VERSION_NOTE)
 
 
+def _sudo_kill(pids):
+    """Stops root processes (Yahboom's driver). sudo may ask for your password."""
+    import subprocess
+    try:
+        return subprocess.call(["sudo", "kill"] + [str(p) for p in pids]) == 0
+    except OSError:
+        return False
+
+
 def stop_other_programs():
     """
-    Another copy of this program is stopped automatically. Yahboom's ROS driver
-    runs as root, so it can only be reported -- it sends its own commands to
-    the same servos and holds the camera.
+    Nothing else may drive the arm. Another copy of this program is stopped
+    directly; Yahboom's ROS driver (root, started at every boot) holds the
+    servos stiff and fights over the readings, so it's stopped with sudo --
+    you may be asked for your password once.
     """
-    for pid, what, ours in other_arm_programs():
+    found = other_arm_programs()
+    for pid, what, ours in found:
         if ours:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -127,9 +138,20 @@ def stop_other_programs():
                 time.sleep(0.5)
             except OSError as e:
                 print("  Couldn't stop %s (%s) -- quit and run: kill %d" % (what, e, pid))
-        else:
-            print("\n  WARNING: %s is also driving the arm." % what)
-            print("  Stop it (until the next reboot) with:  sudo pkill -f arm.launch")
+    ros = [pid for pid, what, ours in found if not ours]
+    if not ros:
+        return
+    print("\n  Yahboom's ROS arm driver is running (it starts at every boot). It holds the")
+    print("  arm stiff and fights this program over the servos -- stopping it now.")
+    print("  (sudo may ask for your password.)")
+    _sudo_kill(ros)
+    for _ in range(10):
+        time.sleep(0.5)
+        left = [pid for pid, what, ours in other_arm_programs() if not ours]
+        if not left:
+            print("  Stopped it (until the next reboot).")
+            return
+    print("  WARNING: it's still running. Stop it with:  sudo pkill -f arm.launch")
 
 
 def start_camera(state, retry=False):
@@ -166,22 +188,40 @@ def report_block(e):
 
 
 def power_on(arm):
-    """Power on in place once every joint reports. Ctrl-C = give up. True if powered."""
+    """
+    Power on in place once every joint reports. A joint that can't report
+    may need moving by hand -- and the arm may be stiff -- so after a few
+    seconds: countdown, power OFF (go and hold it), move it until it beeps,
+    power back on by itself. Ctrl-C = give up. True if powered.
+    """
     if arm.powered:
         return True
-    print("  Waiting for every joint to report, then the power comes on right where the "
-          "arm is (Ctrl-C = give up):")
     try:
-        ok = arm.power_on_when_readable()
+        if arm.power_on_when_readable(timeout=3, show=False):
+            arm.beep(1)
+            print("  Power is on -- the arm holds itself where it is.")
+            return True
+        angles = arm.read_angles(samples=1, ids=(1, 2, 3, 4))
+        problem = arm.reading_problem(angles) or "a joint didn't answer"
+        print("\n  Power isn't on yet: %s." % problem)
+        print("  So you can move it, its power goes OFF after the countdown: go and hold the")
+        print("  arm. Move it until it beeps -- power is back on, it holds itself -- then let go.")
+        teach.countdown(arm, config.TEACH_COUNTDOWN_S)
     except KeyboardInterrupt:
-        print("\n  Gave up -- the power is still off.")
+        print("\n  Cancelled -- nothing changed.")
+        return False
+    try:
+        arm.power_on_when_readable(light=True)
+    except KeyboardInterrupt:
+        arm.light(0, 0, 0)
+        print("\n  Gave up -- the power is still OFF, the arm is floppy.")
         return False
     except ArmBlocked as e:
         report_block(e)
         return False
-    arm.beep(1)
+    arm.beep(long=True)
     print("  Power is on -- the arm holds itself where it is.")
-    return ok
+    return True
 
 
 def do(arm, action, *args, **kwargs):
@@ -234,15 +274,11 @@ def start(arm):
         report_block(arm.start_problem)
         return
     if not arm.powered:
-        angles = arm.read_angles(samples=2, ids=(1, 2, 3, 4))
-        problem = arm.reading_problem(angles) or "a joint didn't answer"
-        print("\n  Power isn't on yet: %s." % problem)
         if power_on(arm):
             # you may still be holding it: don't move until you choose to
             print("  Choose 2 when you're back, to go home.")
         else:
-            print("  Choose 1 to teach anyway (that switches the power off), or fix the "
-                  "joint by hand and choose 2.")
+            print("  Choose 2 to try again, or 1 to teach the board.")
         return
     angles = arm.read_angles(samples=3)
     problem = arm.reading_problem(angles)

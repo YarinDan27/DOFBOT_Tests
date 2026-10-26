@@ -145,12 +145,22 @@ def other_arm_programs():
             continue
         try:
             with open("/proc/%d/cmdline" % pid, "rb") as fh:
-                cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+                args = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0") if a]
         except OSError:
             continue
-        if "arm.launch" in cmd or "dofbot_driver" in cmd or "arm_driver" in cmd:
+        if not args:
+            continue
+        cmd = " ".join(args)
+        # judged by the program's own arguments, not by words anywhere in a
+        # command line (a shell running "grep run.py" is not this program)
+        program = os.path.basename(args[0])
+        if (program.startswith("python") or program in ("roslaunch", "rosrun")) and any(
+                a.endswith("arm.launch") or
+                os.path.splitext(os.path.basename(a))[0] in ("dofbot_driver", "arm_driver")
+                for a in args[1:]):
             found.append((pid, "Yahboom's ROS arm driver (%s)" % cmd[:70], False))
-        elif "python" in cmd and "run.py" in cmd:
+        elif program.startswith("python") and len(args) > 1 and \
+                os.path.basename(args[1]) == "run.py":
             try:
                 cwd = os.path.realpath(os.readlink("/proc/%d/cwd" % pid))
             except OSError:
@@ -413,15 +423,17 @@ class Arm:
                 return
             time.sleep(units * 0.1 + 0.2)
 
-    def power_on_when_readable(self, timeout=None, show=True):
+    def power_on_when_readable(self, timeout=None, show=True, light=False):
         """
         Switches power on in place -- holding still, no jump -- as soon as
-        servos 1-4 all report. No Enter needed. Shows what's missing while it
-        waits. Returns True once powered, False if `timeout` seconds pass.
-        ArmBlocked passes through (a servo didn't stay where it said it was).
+        servos 1-4 all report. No Enter needed. Says which joint is missing
+        (a new line only when that changes -- no screen spam). light=True:
+        red while a joint can't report. Returns True once powered, False if
+        `timeout` seconds pass. ArmBlocked passes through (a servo didn't
+        stay where it said it was).
         """
         start = time.time()
-        width = 0
+        said = None
         while True:
             angles = self.read_angles(samples=1, ids=(1, 2, 3, 4))
             silent = [s for s in (1, 2, 3, 4) if angles[s - 1] is None]
@@ -429,19 +441,21 @@ class Arm:
                 try:
                     self.stiffen_here()
                 except RuntimeError:
-                    silent = [s for s in (1, 2, 3, 4)]
+                    pass                 # one went quiet again in between: keep waiting
                 else:
-                    if show and width:
-                        print()
+                    if light:
+                        self.light(0, 0, 0)
                     return True
-            if show:
-                line = "  waiting: %s can't report -- %s" % (
+            else:
+                message = "  waiting: %s can't report -- %s" % (
                     SERVO_NAMES[silent[0]], FIX_BY_HAND[silent[0]])
-                print("\r" + line.ljust(width), end="", flush=True)
-                width = max(width, len(line))
+                if message != said:
+                    said = message
+                    if show:
+                        print(message, flush=True)
+                    if light:
+                        self.light(90, 0, 0)
             if timeout is not None and time.time() - start > timeout:
-                if show and width:
-                    print()
                 return False
             time.sleep(0.3)
 

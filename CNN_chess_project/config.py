@@ -8,8 +8,9 @@ and saved to calibration/board_arm.json.
 import os
 
 VERSION = "2.4.3"
-VERSION_NOTE = ("joints a little past the end of their scale now report (the folded "
-                "pose, a vertical claw on a piece) -- no more waiting for them")
+VERSION_NOTE = ("stops Yahboom's driver itself; joints a little past the end of their "
+                "scale now report (the folded pose); if one still can't, power goes off "
+                "after a countdown so you can move it")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))

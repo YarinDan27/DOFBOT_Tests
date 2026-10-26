@@ -285,6 +285,7 @@ check("power back on", Arm_Lib.STATE["torque"])
 # =====================================================================
 print("\n--- 6. run.py: start-up asks nothing, goes home, menu works ---")
 run_mod.start_camera = lambda state, retry=False: None
+run_mod.other_arm_programs = lambda: []        # never touch real processes from a test
 Arm_Lib.reset(hand_pose("e4"))           # left on top of a piece, power on
 start_scenario([], limit_s=3000)
 ANSWERS[:] = [("Choose", "3"), ("A square = hover", "e5"), ("A square = hover", "e3 e4"),
@@ -320,6 +321,43 @@ check("powered on by itself once it could", "Power is on" in out and Arm_Lib.STA
 check("didn't move afterwards (you may be holding it)",
       all(abs(Arm_Lib.STATE["pos"][i] - pose[i - 1]) <= 1 for i in range(1, 5)))
 check("no questions besides the menu", not ANSWERS)
+
+# =====================================================================
+print("\n--- 7c. run.py: stiff arm (power on) with a joint that can't report ---")
+pose = hand_pose("e4")
+Arm_Lib.reset(pose[:2] + [-30.0] + pose[3:])       # elbow far past its scale, power ON
+start_scenario([(3.0, None), (2.0, pose)])
+ANSWERS[:] = [("Choose", "0")]
+Arm_Lib.STATE["beeps"] = []
+_, out = quiet(run_mod.main)
+check("countdown, then power off so you can move it", "Power goes OFF in" in out
+      and "Power OFF" in out)
+check("powers back on by itself once it can (long beep)", Arm_Lib.STATE["torque"]
+      and "Power is on" in out and Arm_Lib.STATE["beeps"][-1] == 6, str(Arm_Lib.STATE["beeps"]))
+check("red light while the joint couldn't report", (90, 0, 0) in Arm_Lib.STATE["lights"])
+check("says it once, not over and over", out.count("waiting: elbow") == 1,
+      "%d times" % out.count("waiting: elbow"))
+check("doesn't move afterwards", all(abs(Arm_Lib.STATE["pos"][i] - pose[i - 1]) <= 1
+                                     for i in range(1, 5)))
+
+print("\n--- 7d. run.py stops Yahboom's driver by itself ---")
+killed = []
+running = [[(4242, "Yahboom's ROS arm driver (roslaunch /tmp/arm.launch)", False)]]
+real_others, real_kill = run_mod.other_arm_programs, run_mod._sudo_kill
+assert real_others() == [], "test isolation"
+run_mod.other_arm_programs = lambda: running[0]
+
+
+def fake_kill(pids):
+    killed.extend(pids)
+    running[0] = []
+    return True
+
+
+run_mod._sudo_kill = fake_kill
+_, out = quiet(run_mod.stop_other_programs)
+run_mod.other_arm_programs, run_mod._sudo_kill = real_others, real_kill
+check("stops it with sudo, no question", killed == [4242] and "Stopped it" in out)
 
 # =====================================================================
 print("\n--- 7a. run.py from Yahboom's folded pose (shoulder ~182, wrist ~-2) ---")

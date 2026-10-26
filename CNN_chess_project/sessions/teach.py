@@ -31,6 +31,7 @@ just that one.
 import json
 import math
 import os
+import shutil
 import time
 
 import config
@@ -121,9 +122,23 @@ class _Light:
             self.arm.light(*colour)
 
 
+def _columns():
+    try:
+        return shutil.get_terminal_size((80, 24)).columns
+    except (OSError, ValueError, AttributeError):
+        return 80
+
+
 def _show(line, state):
-    print("\r" + line.ljust(state.get("width", 0)), end="", flush=True)
-    state["width"] = max(state.get("width", 0), len(line))
+    """
+    Rewrites the current line in place. Kept shorter than the terminal: a
+    line that wraps can't be rewritten, and fills the screen instead.
+    """
+    room = max(20, _columns() - 1)
+    line = line[:room]
+    width = min(state.get("width", 0), room)
+    print("\r" + line.ljust(width), end="", flush=True)
+    state["width"] = max(width, len(line))
 
 
 def _end_line(state):
@@ -135,16 +150,18 @@ def _end_line(state):
 def countdown(arm, seconds):
     """Gives you time to walk to the arm, then switches its power off."""
     seconds = int(seconds)
+    screen = {}
     print()
     for left in range(seconds, 0, -1):
-        print("\r  Power goes off in %2d s -- walk to the arm and hold it. (Ctrl-C to cancel)"
-              % left, end="", flush=True)
+        _show("  Power goes OFF in %d s -- go and hold the arm. (Ctrl-C = cancel)" % left,
+              screen)
         if left <= 5:
             arm.beep(1)
             time.sleep(max(0.0, 1.0 - 0.3))
         else:
             time.sleep(1.0)
-    print("\r  Power OFF -- the arm is floppy now." + " " * 40)
+    _show("  Power OFF -- the arm is floppy now.", screen)
+    _end_line(screen)
     arm.limp()
     arm.beep(long=True)
 
@@ -267,7 +284,8 @@ def _finish_at_arm(arm, how):
         print("  Nothing moved for %.0f s -- stopping." % config.TEACH_IDLE_S)
     arm.light(*BLUE)
     try:
-        ok = arm.power_on_when_readable(timeout=config.FINISH_POWER_ON_S, show=True)
+        ok = arm.power_on_when_readable(timeout=config.FINISH_POWER_ON_S, show=True,
+                                        light=True)
     except ArmBlocked as e:
         arm.light(*OFF)
         arm.beep(2)
