@@ -1,0 +1,623 @@
+<title>DOFBOT Arm View</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a workbench viewport on the left (the arm, its base, the electronics
+   box and the board in 3D), an instrument panel on the right that stacks under
+   the viewport on a phone. */
+:root {
+  --bg: #e9edf1;          /* bench */
+  --panel: #f7f9fb;
+  --ink: #18212b;
+  --ink-soft: #55616e;
+  --rule: #d3dae1;
+  --accent: #1f6f8b;      /* instrument blue */
+  --ok: #2f8a5b;
+  --warn: #b7791f;
+  --bad: #c9362f;
+  --stage: #dfe4e9;
+  --chip-bg: #e4ebf1;
+  --font-display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Barlow", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161c; --panel: #171e26; --ink: #e2e8ee; --ink-soft: #95a2af; --rule: #2a3440;
+    --accent: #5cb4d1; --ok: #4cc08a; --warn: #e2a74a; --bad: #ef6a5f; --stage: #0d1217;
+    --chip-bg: #1f2833; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161c; --panel: #171e26; --ink: #e2e8ee; --ink-soft: #95a2af; --rule: #2a3440;
+  --accent: #5cb4d1; --ok: #4cc08a; --warn: #e2a74a; --bad: #ef6a5f; --stage: #0d1217;
+  --chip-bg: #1f2833; color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; }
+.app {
+  height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.bar {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px;
+  padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); border-bottom: 1px solid var(--rule);
+  background: var(--panel);
+}
+.bar h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 22px;
+  letter-spacing: 0.01em; text-wrap: balance; }
+.bar .sub { color: var(--ink-soft); font-size: 14px; }
+.bar .mode { margin-left: auto; }
+.stage { position: relative; min-width: 0; min-height: 0; background: var(--stage); }
+#view { display: block; width: 100%; height: 100%; touch-action: none; }
+.hud { position: absolute; left: 12px; bottom: 12px; right: 12px; display: flex; flex-wrap: wrap;
+  gap: 8px; pointer-events: none; }
+.hud .chip { pointer-events: auto; }
+.views { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; }
+.panel { overflow-y: auto; min-width: 0; background: var(--panel); border-left: 1px solid var(--rule);
+  padding-block: 8px 24px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+section { padding-block: 12px; border-bottom: 1px solid var(--rule); display: grid; gap: 10px; }
+section:last-child { border-bottom: 0; }
+h2 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 13px;
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-soft); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  background: var(--chip-bg); color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.3; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-soft); flex: none; }
+.chip.ok .dot { background: var(--ok); } .chip.warn .dot { background: var(--warn); }
+.chip.bad .dot { background: var(--bad); } .chip.live .dot { background: var(--accent); }
+.joint { display: grid; grid-template-columns: 78px minmax(0, 1fr) 52px; align-items: center; gap: 10px; }
+.joint label { font-weight: 600; font-size: 14px; }
+.joint output { font-family: var(--font-mono); font-size: 13px; text-align: right;
+  font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.readout { font-family: var(--font-mono); font-size: 13px; color: var(--ink-soft);
+  font-variant-numeric: tabular-nums; line-height: 1.6; }
+.readout b { color: var(--ink); font-weight: 600; }
+.status { font-size: 14px; line-height: 1.45; }
+.status.bad { color: var(--bad); } .status.ok { color: var(--ok); } .status.warn { color: var(--warn); }
+.list { display: grid; gap: 6px; }
+button { font: inherit; color: inherit; cursor: pointer; }
+.item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; text-align: left;
+  padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; background: transparent; }
+.item:hover { border-color: var(--accent); }
+.item:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.item .name { font-weight: 600; font-size: 14px; }
+.item .meta { grid-column: 1 / -1; color: var(--ink-soft); font-size: 13px; line-height: 1.4; }
+.item .tag { font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft); align-self: center; }
+.item[aria-pressed="true"] { border-color: var(--accent); background: var(--chip-bg); }
+.item .bar-progress { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--rule);
+  overflow: hidden; }
+.item .bar-progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+.btn { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--rule); background: var(--panel);
+  font-size: 13px; font-weight: 500; }
+.btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.legend { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 6px 10px; align-items: center;
+  font-size: 14px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--ink-soft); }
+.note { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin: 0; max-width: 62ch; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 58vh auto; height: auto; }
+  .panel { border-left: 0; border-top: 1px solid var(--rule); overflow: visible; }
+}
+@media (prefers-reduced-motion: reduce) { .item .bar-progress i { transition: none; } }
+</style>
+
+<div class="app">
+  <header class="bar">
+    <h1>DOFBOT Arm View</h1>
+    <span class="sub" id="subtitle">Collision model of the arm, its base, the electronics box and the board</span>
+    <span class="chip mode" id="mode"><span class="dot"></span><span id="mode-text">Exploring poses</span></span>
+  </header>
+
+  <main class="stage">
+    <canvas id="view" aria-label="3D view of the robot arm"></canvas>
+    <div class="views">
+      <button class="btn" id="v-angle" type="button">3/4</button>
+      <button class="btn" id="v-behind" type="button">Behind</button>
+      <button class="btn" id="v-side" type="button">Side</button>
+      <button class="btn" id="v-top" type="button">Top</button>
+    </div>
+    <div class="hud"><span class="chip" id="room"><span class="dot"></span><span id="room-text">-</span></span></div>
+  </main>
+
+  <aside class="panel">
+    <section aria-labelledby="h-pose">
+      <h2 id="h-pose">Pose (servo angles)</h2>
+      <div id="joints"></div>
+      <div class="readout" id="tip"></div>
+      <div class="status" id="status"></div>
+      <div class="row">
+        <button class="btn" id="follow" type="button" hidden aria-pressed="true">Follow the arm</button>
+      </div>
+    </section>
+    <section aria-labelledby="h-poses">
+      <h2 id="h-poses">Poses</h2>
+      <div class="list" id="poses"></div>
+    </section>
+    <section aria-labelledby="h-moves" id="moves-section">
+      <h2 id="h-moves">Moves planned by v2.5</h2>
+      <div class="list" id="moves"></div>
+    </section>
+    <section aria-labelledby="h-legend">
+      <h2 id="h-legend">What you're looking at</h2>
+      <div class="legend" id="legend"></div>
+      <p class="note" id="notes"></p>
+    </section>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// Filled in when the page is exported (artifact / viz/export.py); null when the
+// Jetson serves it live, and then it reads /scene.json twice a second.
+const DATA = /*SCENE_DATA*/null;
+
+(function () {
+  "use strict";
+  const LIVE = DATA === null;
+  let scene0 = DATA;
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  // ---------- the arm's shape: same maths as robot/body.py ----------
+  function jointPoints(P, a) {
+    const rad = Math.PI / 180;
+    const phi = (a[0] - 90) * rad;
+    const a1 = (90 - a[1]) * rad, a2 = a1 + (90 - a[2]) * rad, a3 = a2 + (90 - a[3]) * rad;
+    const place = (r, z) => [-r * Math.sin(phi), r * Math.cos(phi), z];
+    let r = 0, z = P.H;
+    const out = { shoulder: place(r, z) };
+    r += P.L1 * Math.sin(a1); z += P.L1 * Math.cos(a1); out.elbow = place(r, z);
+    r += P.L2 * Math.sin(a2); z += P.L2 * Math.cos(a2); out.wrist = place(r, z);
+    out.hand = place(r + P.L3 * P.wrist_part * Math.sin(a3), z + P.L3 * P.wrist_part * Math.cos(a3));
+    const cr = r + P.camera_along * Math.sin(a3) - P.camera_up * Math.cos(a3);
+    const cz = z + P.camera_along * Math.cos(a3) + P.camera_up * Math.sin(a3);
+    const c = place(cr, cz), across = [Math.cos(phi), Math.sin(phi), 0], w = P.camera_half_width;
+    out.camera_a = [c[0] - across[0] * w, c[1] - across[1] * w, c[2]];
+    out.camera_b = [c[0] + across[0] * w, c[1] + across[1] * w, c[2]];
+    r += P.L3 * Math.sin(a3); z += P.L3 * Math.cos(a3); out.tip = place(r, z);
+    out.approach = a3 / rad;
+    return out;
+  }
+  const LINKS = [["upper arm", "shoulder", "elbow"], ["forearm", "elbow", "wrist"],
+                 ["wrist", "wrist", "hand"], ["gripper", "hand", "tip"], ["camera", "camera_a", "camera_b"]];
+
+  // ---------- distances: same maths as robot/world.py ----------
+  function boxDistance(o, p) {
+    const d = [p[0] - o.center[0], p[1] - o.center[1], p[2] - o.center[2]];
+    const q = o.axes.map((ax, i) => Math.abs(d[0] * ax[0] + d[1] * ax[1] + d[2] * ax[2]) - o.half[i]);
+    const outside = Math.sqrt(q.reduce((s, c) => s + Math.max(c, 0) ** 2, 0));
+    return outside + Math.min(Math.max(q[0], q[1], q[2]), 0);
+  }
+  function cylDistance(o, p) {
+    const dr = Math.hypot(p[0] - o.center[0], p[1] - o.center[1]) - o.radius;
+    const dz = Math.max(o.z[0] - p[2], p[2] - o.z[1]);
+    if (dr <= 0 && dz <= 0) return Math.max(dr, dz);
+    return Math.sqrt(Math.max(dr, 0) ** 2 + Math.max(dz, 0) ** 2);
+  }
+  const SPACING = 6;
+  function margins(S, a) {
+    const P = S.params, pts = jointPoints(P, a), exempt = new Set(P.exempt.map((e) => e.join("|")));
+    const perLink = {};
+    let best = { m: Infinity, link: null, ob: null };
+    for (const [name, A, B] of LINKS) {
+      const p0 = pts[A], p1 = pts[B], rad = P.radius[name];
+      const len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+      const n = Math.max(1, Math.ceil(len / SPACING));
+      let linkBest = Infinity;
+      for (let k = 0; k <= n; k++) {
+        const f = k / n, p = [p0[0] + (p1[0] - p0[0]) * f, p0[1] + (p1[1] - p0[1]) * f, p0[2] + (p1[2] - p0[2]) * f];
+        for (const o of S.world.obstacles) {
+          if (exempt.has(name + "|" + o.name)) continue;
+          const d = o.kind === "box" ? boxDistance(o, p) : cylDistance(o, p);
+          const m = d - rad - SPACING / 2 - o.clear;
+          if (m < linkBest) linkBest = m;
+          if (m < best.m) best = { m, link: name, ob: o.name, clear: o.clear };
+        }
+      }
+      perLink[name] = linkBest;
+    }
+    return { best, perLink, pts };
+  }
+
+  // ---------- three.js scene ----------
+  const canvas = document.getElementById("view");
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 5, 5000);
+  const controls = new THREE.OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.target.set(0, 70, -110);
+  // arm mm (x right, y toward the board, z up) -> three (x, up, toward viewer)
+  const V = (p) => new THREE.Vector3(p[0], p[2], -p[1]);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f96, 0.85));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+  sun.position.set(-260, 620, 380);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -450, right: 450, top: 450, bottom: -450, near: 50, far: 1600 });
+  scene.add(sun);
+
+  const mat = (color, extra) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.62, metalness: 0.05 }, extra || {}));
+  const world = new THREE.Group(); scene.add(world);
+  const armGroup = new THREE.Group(); scene.add(armGroup);
+  const overlay = new THREE.Group(); scene.add(overlay);
+
+  function labelSprite(text, color, size) {
+    const c = document.createElement("canvas"), s = 128;
+    const font = "600 64px " + css("--font-mono").split(",")[0].replace(/"/g, "") + ", monospace";
+    let g = c.getContext("2d");
+    g.font = font;
+    const w = Math.max(s, Math.ceil(g.measureText(text).width) + 32);
+    c.width = w; c.height = s;
+    g = c.getContext("2d");
+    g.font = font; g.fillStyle = color; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(text, w / 2, s / 2);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
+    sp.scale.set(size * w / s, size, 1);
+    sp.renderOrder = 10;
+    return sp;
+  }
+
+  function clearGroup(g) {
+    while (g.children.length) {
+      const c = g.children.pop();
+      c.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material.map) o.material.map.dispose(); });
+    }
+  }
+
+  function buildWorld(S) {
+    clearGroup(world);
+    const dark = document.documentElement.matches("[data-theme=dark]") ||
+      (!document.documentElement.matches("[data-theme=light]") && matchMedia("(prefers-color-scheme: dark)").matches);
+    scene.background = new THREE.Color(css("--stage"));
+    const tableZ = S.params.table_z;
+    const table = new THREE.Mesh(new THREE.PlaneGeometry(1400, 1400), mat(dark ? 0x1b2128 : 0xd9dee3));
+    table.rotation.x = -Math.PI / 2; table.position.y = tableZ - 0.5; table.receiveShadow = true;
+    world.add(table);
+    const grid = new THREE.GridHelper(800, 40, dark ? 0x2b3540 : 0xc3cbd3, dark ? 0x222a33 : 0xccd3da);
+    grid.position.y = tableZ; world.add(grid);
+
+    for (const o of S.world.obstacles) {
+      if (o.name === "table") continue;
+      let mesh;
+      if (o.kind === "box") {
+        const colors = { "base plate": 0xf1f0ec, electronics: 0x26292d };
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(o.half[0] * 2, o.half[2] * 2, o.half[1] * 2),
+          mat(colors[o.name] || 0x777777, o.name === "electronics" ? { roughness: 0.4, metalness: 0.4 } : {}));
+        mesh.position.copy(V(o.center));
+        if (o.name === "electronics") {
+          const shell = new THREE.Mesh(new THREE.BoxGeometry(o.half[0] * 2 + o.clear * 2, o.half[2] * 2 + o.clear * 2, o.half[1] * 2 + o.clear * 2),
+            new THREE.MeshBasicMaterial({ color: css("--bad"), wireframe: true, transparent: true, opacity: 0.18 }));
+          shell.position.copy(mesh.position); world.add(shell);
+          const lab = labelSprite("electronics", dark ? "#cfd6dd" : "#e9edf1", 16);
+          lab.position.copy(V([o.center[0], o.center[1], o.center[2] + o.half[2] + 18])); world.add(lab);
+        }
+      } else {
+        const h = o.z[1] - o.z[0];
+        mesh = new THREE.Mesh(new THREE.CylinderGeometry(o.radius, o.radius, h, o.radius > 50 ? 6 : 40),
+          mat(o.radius > 50 ? 0x1f2226 : 0xbfc6cc, o.radius > 50 ? {} : { transparent: true, opacity: 0.55 }));
+        mesh.position.copy(V([o.center[0], o.center[1], (o.z[0] + o.z[1]) / 2]));
+      }
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      world.add(mesh);
+    }
+
+    // the board: squares at the board surface
+    const B = S.board;
+    if (B) {
+      const fs = B.file_step, rs = B.rank_step, size = B.square_mm;
+      const surface = S.board_surface_z !== undefined ? S.board_surface_z : null;
+      const light = 0xe6d6b8, darkSq = 0x8e7556;
+      const g = new THREE.BoxGeometry(size, 1.5, size);
+      const ang = Math.atan2(fs[1], fs[0]);
+      for (const sq of B.squares) {
+        const f = "abcdefgh".indexOf(sq.name[0]), r = +sq.name[1] - 1;
+        const z = surface !== null ? surface : sq.xyz[2];
+        const m = new THREE.Mesh(g, mat((f + r) % 2 === 0 ? darkSq : light));
+        m.position.copy(V([sq.xyz[0], sq.xyz[1], z - 0.75]));
+        m.rotation.y = ang;
+        m.receiveShadow = true;
+        world.add(m);
+        const col = squareColor(sq);
+        if (col) {
+          const dot = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.18, size * 0.18, 1, 20),
+            new THREE.MeshBasicMaterial({ color: col }));
+          dot.position.copy(V([sq.xyz[0], sq.xyz[1], z + 0.6])); world.add(dot);
+        }
+      }
+      const corner = (f, r) => [B.origin[0] + fs[0] * f + rs[0] * r, B.origin[1] + fs[1] * f + rs[1] * r];
+      const zl = surface !== null ? surface : B.origin[2];
+      for (let i = 0; i < 8; i++) {
+        const a = corner(i, -0.9), b = corner(-0.9, i);
+        const la = labelSprite("abcdefgh"[i], dark ? "#cfd6dd" : "#3b4651", 13); la.position.copy(V([a[0], a[1], zl + 2])); world.add(la);
+        const lb = labelSprite(String(i + 1), dark ? "#cfd6dd" : "#3b4651", 13); lb.position.copy(V([b[0], b[1], zl + 2])); world.add(lb);
+      }
+    }
+    for (const mk of S.markers || []) {
+      const s = new THREE.Mesh(new THREE.SphereGeometry(5, 16, 12), new THREE.MeshStandardMaterial({ color: mk.color }));
+      s.position.copy(V(mk.xyz)); world.add(s);
+      const lab = labelSprite(mk.label, mk.color, 10);
+      lab.position.copy(V([mk.xyz[0], mk.xyz[1], mk.xyz[2] + 14])); world.add(lab);
+    }
+  }
+
+  function squareColor(sq) {
+    if (sq.error_mm !== null && sq.error_mm !== undefined) {
+      return sq.error_mm <= 2 ? css("--ok") : sq.error_mm <= 5 ? css("--warn") : css("--bad");
+    }
+    if (sq.status && sq.status !== "measured") return css("--bad");
+    if (sq.reach === "--") return css("--ink-soft");
+    return null;
+  }
+
+  // the arm: one capsule per part
+  const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 24, 1, true);
+  const unitSph = new THREE.SphereGeometry(1, 24, 16);
+  const COLORS = { "upper arm": 0xeeece6, forearm: 0xeeece6, wrist: 0x2b2e33, gripper: 0x2b2e33, camera: 0x15171a };
+  const parts = {};
+  for (const [name] of LINKS) {
+    const m = mat(COLORS[name]);
+    const group = new THREE.Group();
+    const cyl = new THREE.Mesh(unitCyl, m), s0 = new THREE.Mesh(unitSph, m), s1 = new THREE.Mesh(unitSph, m);
+    for (const o of [cyl, s0, s1]) { o.castShadow = true; group.add(o); }
+    armGroup.add(group);
+    parts[name] = { group, cyl, s0, s1, m, base: new THREE.Color(COLORS[name]) };
+  }
+  const tipDot = new THREE.Mesh(new THREE.SphereGeometry(4, 16, 12), new THREE.MeshBasicMaterial({ color: 0xd9412f }));
+  armGroup.add(tipDot);
+  const shoulderHub = new THREE.Mesh(new THREE.CylinderGeometry(24, 24, 52, 24), mat(0x2b2e33));
+  shoulderHub.castShadow = true; armGroup.add(shoulderHub);
+  const up = new THREE.Vector3(0, 1, 0);
+
+  function placeCapsule(part, a, b, r) {
+    const A = V(a), Bv = V(b), d = Bv.clone().sub(A), len = Math.max(d.length(), 0.001);
+    part.cyl.position.copy(A.clone().add(Bv).multiplyScalar(0.5));
+    part.cyl.quaternion.setFromUnitVectors(up, d.clone().normalize());
+    part.cyl.scale.set(r, len, r);
+    part.s0.position.copy(A); part.s0.scale.setScalar(r);
+    part.s1.position.copy(Bv); part.s1.scale.setScalar(r);
+  }
+
+  let pathLine = null;
+  function showPath(S, poses) {
+    if (pathLine) { overlay.remove(pathLine); pathLine.geometry.dispose(); pathLine = null; }
+    if (!poses || poses.length < 2) return;
+    const pts = poses.map((a) => V(jointPoints(S.params, a).tip));
+    pathLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: css("--accent"), transparent: true, opacity: 0.9 }));
+    overlay.add(pathLine);
+  }
+
+  // ---------- panel ----------
+  const NAMES = ["base", "shoulder", "elbow", "wrist"];
+  const jointsEl = document.getElementById("joints");
+  const sliders = [];
+  let pose = [90, 90, 90, 90];
+  function buildSliders(S) {
+    jointsEl.innerHTML = "";
+    sliders.length = 0;
+    NAMES.forEach((name, i) => {
+      const range = S.params.joint_range[String(i + 1)];
+      const row = document.createElement("div");
+      row.className = "joint";
+      row.innerHTML = '<label for="j' + (i + 1) + '">' + (i + 1) + " " + name + '</label>' +
+        '<input type="range" id="j' + (i + 1) + '" min="' + range[0] + '" max="' + range[1] + '" step="1">' +
+        '<output for="j' + (i + 1) + '"></output>';
+      const input = row.querySelector("input"), out = row.querySelector("output");
+      input.addEventListener("input", () => { stopAll(); setFollow(false); pose[i] = +input.value; render(); });
+      sliders.push({ input, out });
+      jointsEl.appendChild(row);
+    });
+  }
+
+  function setStatus(S, res) {
+    const roomEl = document.getElementById("room"), roomText = document.getElementById("room-text");
+    const status = document.getElementById("status");
+    const b = res.best, gap = b.m + b.clear;
+    let cls = "ok", text;
+    if (b.m < 0) {
+      cls = "bad";
+      text = gap < 0 ? "The " + b.link + " would be inside the " + b.ob + "."
+                     : "Too close: the " + b.link + " would be " + gap.toFixed(0) + " mm from the " + b.ob +
+                       " (it keeps " + b.clear.toFixed(0) + " mm away).";
+    } else if (b.m < 5) {
+      cls = "warn"; text = "Allowed, but tight: the " + b.link + " is " + gap.toFixed(0) + " mm from the " + b.ob + ".";
+    } else {
+      text = "Clear. Closest: the " + b.link + ", " + gap.toFixed(0) + " mm from the " + b.ob + ".";
+    }
+    roomEl.className = "chip " + cls;
+    roomText.textContent = b.m < 0 ? "Not allowed" : gap.toFixed(0) + " mm room";
+    status.className = "status " + cls;
+    status.textContent = text;
+  }
+
+  function render() {
+    const S = scene0;
+    if (!S) return;
+    const res = margins(S, pose);
+    for (const [name, A, B] of LINKS) {
+      const part = parts[name];
+      placeCapsule(part, res.pts[A], res.pts[B], S.params.radius[name]);
+      part.m.color.copy(res.perLink[name] < 0 ? new THREE.Color(css("--bad")) : part.base);
+    }
+    tipDot.position.copy(V(res.pts.tip));
+    const sh = res.pts.shoulder;
+    shoulderHub.position.copy(V(sh));
+    shoulderHub.rotation.set(0, 0, 0);
+    shoulderHub.rotateY((pose[0] - 90) * Math.PI / 180);
+    shoulderHub.rotateZ(Math.PI / 2);
+    sliders.forEach((s, i) => { s.input.value = pose[i]; s.out.textContent = Math.round(pose[i]) + "°"; });
+    const t = res.pts.tip, tilt = Math.abs(180 - res.pts.approach);
+    document.getElementById("tip").innerHTML = "claw tip <b>x " + t[0].toFixed(0) + "</b>  <b>y " + t[1].toFixed(0) +
+      "</b>  <b>z " + t[2].toFixed(0) + "</b> mm<br>claw tilted " + tilt.toFixed(0) + "° from straight down";
+    setStatus(S, res);
+  }
+
+  // ---------- poses and moves ----------
+  let anim = null;
+  function stopAll() {
+    anim = null;
+    document.querySelectorAll("#moves .item").forEach((el) => el.setAttribute("aria-pressed", "false"));
+  }
+  function poseButton(p) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "item";
+    b.innerHTML = '<span class="name"></span><span class="tag"></span><span class="meta"></span>';
+    b.querySelector(".name").textContent = p.name;
+    b.querySelector(".tag").textContent = p.angles.slice(0, 4).map((v) => Math.round(v)).join(" · ");
+    b.querySelector(".meta").textContent = p.note || "";
+    b.addEventListener("click", () => { stopAll(); setFollow(false); pose = p.angles.slice(0, 4); showPath(scene0, null); render(); });
+    return b;
+  }
+  function moveButton(mv) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "item"; b.setAttribute("aria-pressed", "false");
+    b.innerHTML = '<span class="name"></span><span class="tag"></span><span class="meta"></span><span class="bar-progress"><i></i></span>';
+    b.querySelector(".name").textContent = mv.name;
+    const total = mv.frames[mv.frames.length - 1].t;
+    b.querySelector(".tag").textContent = total.toFixed(1) + " s";
+    b.querySelector(".meta").textContent = mv.note || "";
+    b.addEventListener("click", () => {
+      const playing = anim && anim.mv === mv;
+      stopAll();
+      if (playing) return;
+      setFollow(false);
+      b.setAttribute("aria-pressed", "true");
+      showPath(scene0, mv.frames.map((f) => f.a));
+      anim = { mv, el: b, start: performance.now() };
+    });
+    return b;
+  }
+  function stepAnim(now) {
+    if (!anim) return;
+    const mv = anim.mv, fr = mv.frames, total = fr[fr.length - 1].t;
+    const t = Math.min(((now - anim.start) / 1000) * (mv.speed || 1), total);
+    let i = 1;
+    while (i < fr.length - 1 && fr[i].t < t) i++;
+    const a = fr[i - 1], b = fr[i], span = Math.max(b.t - a.t, 1e-6), f = Math.min(Math.max((t - a.t) / span, 0), 1);
+    pose = a.a.map((v, k) => v + (b.a[k] - v) * f);
+    anim.el.querySelector(".bar-progress i").style.width = (100 * t / total) + "%";
+    render();
+    if (t >= total) { anim.el.setAttribute("aria-pressed", "false"); anim = null; }
+  }
+
+  function fillPanel(S) {
+    const posesEl = document.getElementById("poses");
+    posesEl.innerHTML = "";
+    (S.presets || []).forEach((p) => posesEl.appendChild(poseButton(p)));
+    const movesEl = document.getElementById("moves");
+    movesEl.innerHTML = "";
+    (S.moves || []).forEach((m) => movesEl.appendChild(moveButton(m)));
+    document.getElementById("moves-section").hidden = !(S.moves && S.moves.length);
+    const legend = document.getElementById("legend");
+    const items = [["#eeece6", "Arm links, drawn as the solid capsules the program checks"],
+                   ["var(--bad)", "A part that is too close to something (or inside it)"],
+                   ["#26292d", "Electronics box (estimate) and its keep-away shell"],
+                   ["#1f2226", "Turning base (hexagon housing)"],
+                   ["var(--accent)", "Path of the claw tip during a move"]];
+    if (S.board && S.board.squares.some((q) => q.error_mm !== null && q.error_mm !== undefined)) {
+      items.push(["var(--ok)", "Board square measured within 2 mm (yellow 5 mm, red worse)"]);
+    }
+    (S.markers || []).forEach((m) => items.push([m.color, m.legend || m.label]));
+    const seen = new Set();
+    legend.innerHTML = "";
+    items.forEach(([c, t]) => {
+      if (seen.has(t)) return; seen.add(t);
+      const sw = document.createElement("span"); sw.className = "sw"; sw.style.background = c;
+      const tx = document.createElement("span"); tx.textContent = t;
+      legend.appendChild(sw); legend.appendChild(tx);
+    });
+    document.getElementById("notes").textContent = S.notes || "";
+    if (S.subtitle) document.getElementById("subtitle").textContent = S.subtitle;
+  }
+
+  // ---------- camera views ----------
+  function view(name) {
+    const views = { angle: [560, 470, 430], behind: [0, 420, 700], side: [760, 260, -60],
+                    top: [0, 980, -60] };
+    camera.position.set(...views[name]);
+    controls.target.set(0, 40, -60);
+    controls.update();
+  }
+  ["angle", "behind", "side", "top"].forEach((n) => document.getElementById("v-" + n).addEventListener("click", () => view(n)));
+
+  // ---------- live mode ----------
+  let follow = LIVE;
+  function setFollow(on) {
+    follow = on && LIVE;
+    const btn = document.getElementById("follow");
+    btn.setAttribute("aria-pressed", String(follow));
+    document.getElementById("mode-text").textContent = LIVE ? (follow ? "Live from the arm" : "Exploring (live paused)") : "Exploring poses";
+    document.getElementById("mode").className = "chip mode" + (follow ? " live" : "");
+  }
+  document.getElementById("follow").addEventListener("click", () => setFollow(!follow));
+
+  let lastKey = "";
+  async function poll() {
+    try {
+      const res = await fetch("scene.json", { cache: "no-store" });
+      const S = await res.json();
+      const key = JSON.stringify([S.world, S.board, S.markers]);
+      const first = !scene0;
+      scene0 = S;
+      if (key !== lastKey) { buildWorld(S); lastKey = key; }
+      if (first) { buildSliders(S); fillPanel(S); }
+      if (follow && S.arm && S.arm.angles && S.arm.angles.slice(0, 4).every((v) => v !== null)) {
+        pose = S.arm.angles.slice(0, 4);
+        showPath(S, S.arm.plan);
+        render();
+        const age = Date.now() / 1000 - S.arm.seen;
+        document.getElementById("mode-text").textContent =
+          "Live from the arm" + (S.arm.blocked ? " · STOPPED" : S.arm.limp ? " · power off" : "") +
+          (age > 5 ? " · last seen " + Math.round(age) + " s ago" : "");
+      } else if (first) { render(); }
+    } catch (e) {
+      document.getElementById("mode-text").textContent = "Can't reach the arm program";
+      document.getElementById("mode").className = "chip mode bad";
+    }
+  }
+
+  // ---------- go ----------
+  function resize() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+  const themeChanged = () => { if (scene0) { buildWorld(scene0); render(); } };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeChanged);
+  new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  view("angle");
+  if (LIVE) {
+    document.getElementById("follow").hidden = false;
+    setFollow(true);
+    poll(); setInterval(poll, 500);
+  } else {
+    buildWorld(scene0); buildSliders(scene0); fillPanel(scene0);
+    pose = (scene0.start || scene0.rest).slice(0, 4);
+    render();
+    setFollow(false);
+  }
+  function loop(now) {
+    requestAnimationFrame(loop);
+    resize();
+    stepAnim(now);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>

@@ -4,32 +4,62 @@ DOFBOT chess -- start here:
 
     cd ~/YDscripts/CNN_chess_project && python3 run.py
 
+    python3 run.py --sim     the same program on a simulated arm: no arm needed
+                             (try it on your PC; watch it in the 3D view)
+    python3 run.py --check   reads the servos and says what it sees; moves nothing
+
 No questions at start-up. It switches the arm's power on right where the arm
 is (no jump), says where the claw is, and -- unless you press Ctrl-C within
-3 seconds -- goes home slowly: up first, then across, in small steps, each
-checked against what the servos report back. If a joint falls short
-(something in the way), it stops and holds still.
+3 seconds -- goes home: resting (folded back), or the home pose you taught.
+Every move is planned against the arm's real shape -- the electronics box,
+the turning base, the plate, the table and the board (robot/world.py) --
+and checked against what the servos report back as it goes. If a joint falls
+short (something in the way), it stops and holds still.
 
 Teaching is hands-free at the arm: start it here, walk over, and the arm
 tells you what it's doing with beeps and its light (see sessions/teach.py).
+Or move it from the keyboard (option 5) and mark squares there.
 
-Ctrl-C never moves the arm: it stops right where it is. Quitting leaves the
-arm holding where it is.
+Live 3D view of the arm while this runs: http://<jetson>:8081 (printed at
+start). Everything printed is also saved in logs/session/ -- send me the
+newest file if something goes wrong.
+
+Ctrl-C never moves the arm: it stops right where it is. 0 folds the arm
+back to rest, then quits; q quits leaving it where it is.
 
 This menu (and the sessions/ it starts) is the only code that connects the
 arm, the camera and the game. robot/, vision/ and game/ never import each
 other, so each can be tested on its own.
 """
 import os
+import shutil
 import signal
+import socket
 import sys
 import time
 
 import config
-from robot import kinematics
-from robot.arm import Arm, ArmBlocked, OutOfReach, UnsafeMove, other_arm_programs
-from robot.board_frame import FILES, BoardFrame, is_square
-from sessions import look_pose, self_test, teach
+
+SIM = "--sim" in sys.argv
+if SIM:
+    # the pretend arm from the tests, and its own folders, so a simulated run
+    # never touches the real calibration
+    sys.path.insert(0, os.path.join(config.ROOT, "tests", "fakes"))
+    _real_calibration = config.CALIBRATION_DIR
+    config.CALIBRATION_DIR = os.path.join(config.ROOT, "sim", "calibration")
+    config.DATA_DIR = os.path.join(config.ROOT, "sim", "data")
+    config.LOGS_DIR = os.path.join(config.ROOT, "sim", "logs")
+    config.BOARD_FILE = os.path.join(config.CALIBRATION_DIR, "board_arm.json")
+    config.LOOK_POSE_FILE = os.path.join(config.CALIBRATION_DIR, "look_pose.json")
+    config.ELECTRONICS_FILE = os.path.join(config.CALIBRATION_DIR, "electronics.json")
+    if not os.path.isdir(config.CALIBRATION_DIR) and os.path.isdir(_real_calibration):
+        shutil.copytree(_real_calibration, config.CALIBRATION_DIR)
+
+from robot import kinematics                                   # noqa: E402
+from robot.arm import (Arm, ArmBlocked, OutOfReach, SERVO_NAMES, UnsafeMove,  # noqa: E402
+                       other_arm_programs)
+from robot.board_frame import FILES, BoardFrame, is_square     # noqa: E402
+from sessions import electronics, jog, look_pose, self_test, teach  # noqa: E402
 
 
 # ---------------- coloured board map ----------------
@@ -68,7 +98,7 @@ def square_grade(sq, reach, result):
     return "?", "new"
 
 
-def board_map(frame, results, colour=None):
+def board_map(frame, results, colour=None, zone=None):
     """
     The board as seen from behind the arm (rank 8 at the top). Each square:
     how far off the claw was when it hovered there (mm), coloured
@@ -76,7 +106,7 @@ def board_map(frame, results, colour=None):
     reach, plain '?' = not tested yet. * = a square you taught.
     """
     colour = _use_colour() if colour is None else colour
-    reach = frame.reach_map()
+    reach = frame.reach_map(zone)
     lines = []
     for rank in range(8, 0, -1):
         cells = []
@@ -109,8 +139,76 @@ def board_map(frame, results, colour=None):
 
 # ---------------- helpers ----------------
 def banner():
-    print("\n=== DOFBOT Chess v%s ===" % config.VERSION)
+    print("\n=== DOFBOT Chess v%s%s ===" % (config.VERSION, "  (SIMULATED ARM)" if SIM else ""))
     print("Last fix: %s" % config.VERSION_NOTE)
+
+
+class Tee(object):
+    """Everything printed also goes to logs/session/<time>.txt."""
+
+    def __init__(self, stream, path):
+        self.stream = stream
+        self.file = open(path, "a")
+
+    def write(self, text):
+        self.stream.write(text)
+        try:
+            self.file.write(text)
+            self.file.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def start_session_log():
+    try:
+        folder = os.path.join(config.LOGS_DIR, "session")
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        path = os.path.join(folder, time.strftime("%Y%m%d-%H%M%S") + ".txt")
+        sys.stdout = Tee(sys.stdout, path)
+        return path
+    except Exception:
+        return None
+
+
+def local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+
+def start_view(arm, state):
+    """The live 3D view (viz/live.py). Returns its address, or None."""
+    try:
+        from viz import live, scene
+    except Exception:
+        return None
+
+    def get_scene():
+        return scene.build(arm.zone, state["frame"], arm,
+                           results=self_test.latest_results(state["frame"]),
+                           extra={"presets": [{"name": "Resting (folded back)",
+                                               "angles": list(config.POSE_REST)},
+                                              {"name": "Home", "angles": list(arm.home_pose)}],
+                                  "subtitle": "Live from the arm program v%s%s" % (
+                                      config.VERSION, " (simulated arm)" if SIM else "")})
+    try:
+        state["view"] = live.start(get_scene)
+    except OSError as e:
+        print("  (3D view unavailable: port %d is busy -- %s)" % (config.VIEW_PORT, e))
+        return None
+    return "http://%s:%d" % ("localhost" if SIM else local_ip(), config.VIEW_PORT)
 
 
 def _sudo_kill(pids):
@@ -251,10 +349,14 @@ def do(arm, action, *args, **kwargs):
 
 
 def back_home(arm):
-    """Rise straight up first, THEN swing home: never swing low."""
-    arm.lift_clear()
+    """Home: rises straight up first if it's low over the board, then a planned move."""
     arm.go_home()
     print("  Home.")
+
+
+def rest(arm):
+    arm.move_to_pose(config.POSE_REST)
+    print("  Resting.")
 
 
 def can_move(arm):
@@ -314,8 +416,8 @@ def map_screen(arm, state):
     worst = max(frame.residuals().values() or [0.0])
     print("\nBoard: %d squares taught, squares %.1f mm, worst touch %.1f mm off"
           % (len(frame.taught), file_mm, worst))
-    print(board_map(frame, self_test.latest_results(frame)))
-    reach = frame.reach_map()
+    print(board_map(frame, self_test.latest_results(frame), zone=arm.zone))
+    reach = frame.reach_map(arm.zone)
     hovering = False
     while True:
         try:
@@ -367,7 +469,8 @@ def self_test_screen(arm, state):
         return
     results = do(arm, self_test.run, arm, frame, start_camera(state))
     print()
-    print(board_map(frame, results if results is not None else self_test.latest_results(frame)))
+    print(board_map(frame, results if results is not None else self_test.latest_results(frame),
+                    zone=arm.zone))
 
 
 def camera_screen(state):
@@ -397,17 +500,63 @@ def camera_screen(state):
 
 
 def teach_screen(arm, state):
+    if SIM:
+        print(SIM_HANDS)
+        return
     new = do(arm, teach.run, arm, start_camera(state), state["frame"])
     if new is not None:
         state["frame"] = new
         arm.set_board(new)
         print()
-        print(board_map(new, {}))
+        print(board_map(new, {}, zone=arm.zone))
         print("  Option 4 measures every square and fills in this map.")
 
 
 def look_screen(arm, state):
+    if SIM:
+        print(SIM_HANDS)
+        return
     do(arm, look_pose.run, arm, start_camera(state))
+
+
+SIM_HANDS = ("\n  That one needs your hands on the real arm. On the simulated arm, use"
+             "\n  5 Keyboard control instead (m marks the square under the claw).")
+
+
+def keyboard_screen(arm, state):
+    if not can_move(arm):
+        return
+    taught = do(arm, jog.run, arm, None, state["jog_taught"])
+    if taught is None:
+        return
+    state["jog_taught"] = taught
+    if len(taught) < 3:
+        if taught:
+            print("  %d square(s) marked -- mark 3 or more to make a board (kept until you "
+                  "quit)." % len(taught))
+        return
+    try:
+        new, bad = teach._review(taught)
+    except ValueError as e:
+        print("  " + str(e))
+        return
+    if bad:
+        print("  Not saved: mark %s again (5, put the claw on it, m)." % " ".join(bad))
+        for sq in bad:
+            taught.pop(sq, None)
+        return
+    new.save()
+    state["frame"] = new
+    arm.set_board(new)
+    print("\nSaved the board from %d marked squares." % len(taught))
+    print(board_map(new, {}, zone=arm.zone))
+
+
+def electronics_screen(arm, state):
+    if SIM:
+        print(SIM_HANDS)
+        return
+    do(arm, electronics.run, arm)
 
 
 def status_line(arm, state):
@@ -420,22 +569,72 @@ def status_line(arm, state):
     frame = state["frame"]
     board = "not taught" if frame is None else "%d squares taught" % len(frame.taught)
     camera = "on" if state["camera"] is not None else "off"
-    return "Arm: %s | Board: %s | Camera: %s" % (arm_text, board, camera)
+    line = "Arm: %s | Board: %s | Camera: %s" % (arm_text, board, camera)
+    if state.get("view_url"):
+        line += " | 3D: " + state["view_url"]
+    return line
 
 
-MENU = [("1", "Teach the board", "hands-free at the arm -- put a pawn on each square"),
-        ("2", "Go home", "look at the board"),
+MENU = [("1", "Teach the board", "hands-free at the arm -- a pawn on each square"),
+        ("2", "Go home", "resting (folded back), or the home pose you taught"),
         ("3", "Board map", "which squares it's sure about; hover or move a piece"),
-        ("4", "Self-test", "hovers over every square it can reach and measures itself"),
-        ("5", "Camera test", "frame rate, brightness, a photo, live view link"),
-        ("6", "Teach the camera view", "hands-free at the arm: where home is"),
-        ("0", "Quit", "the arm stays where it is, holding")]
+        ("4", "Self-test", "hovers over every square it can reach, measures itself"),
+        ("5", "Keyboard control", "move each joint or the claw; m marks a square"),
+        ("6", "Camera test", "frame rate, brightness, a photo, live camera link"),
+        ("7", "Teach the home pose", "hands-free at the arm: where it waits"),
+        ("8", "Measure the electronics", "hands-free: touch the top of the black box"),
+        ("0", "Rest and quit", "folds back to rest, then quits (q = quit, stay put)")]
+
+
+def check():
+    """--check: says what the arm reports and what the model makes of it. Moves nothing."""
+    banner()
+    print("  Python %s" % sys.version.split()[0])
+    for pid, what, ours in other_arm_programs():
+        print("  Also running: %s (pid %d)" % (what, pid))
+    try:
+        arm = Arm(power_on=False)
+    except Exception as e:
+        print("  Can't talk to the arm: %s" % e)
+        return
+    frame = BoardFrame.load()
+    arm.set_board(frame)
+    angles = arm.read_angles(samples=3)
+    print("  Servos: " + "  ".join("%s %s" % (SERVO_NAMES[i + 1], "--" if a is None
+                                                else "%.0f" % a) for i, a in enumerate(angles)))
+    problem = arm.reading_problem(angles)
+    if problem:
+        print("  Problem: %s" % problem)
+    else:
+        x, y, z, approach = kinematics.forward(*angles[:4])
+        m, link, ob, _ = arm.zone.margin(angles)
+        print("  Claw tip x=%.0f y=%.0f z=%.0f mm, tilted %.0f deg from straight down"
+              % (x, y, z, abs(180 - approach)))
+        print("  Closest to anything solid: the %s, %.0f mm from the %s%s"
+              % (link, m + config.HARD_CLEAR_MM, ob, " -- TOO CLOSE" if m < 0 else ""))
+    print("  Board: %s" % ("not taught" if frame is None else
+                           "%d squares taught, squares %.1f mm" % (len(frame.taught),
+                                                                  frame.square_size_mm()[0])))
+    home = look_pose.load()
+    print("  Home pose: %s" % (home if home else "not taught (resting: %s)" % config.POSE_REST))
+    print("  Electronics: %s" % ("measured (%s)" % config.ELECTRONICS_FILE
+                                 if os.path.exists(config.ELECTRONICS_FILE)
+                                 else "the estimate in config.py (not measured yet)"))
+    videos = sorted(d for d in os.listdir("/dev") if d.startswith("video")) \
+        if os.path.isdir("/dev") else []
+    print("  Cameras: %s" % (" ".join("/dev/" + v for v in videos) or "none found"))
+    arm.skip_park = True
 
 
 def main():
+    log_path = start_session_log()
     banner()
     stop_other_programs()
-    state = {"frame": BoardFrame.load(), "camera": None, "camera_failed": False}
+    state = {"frame": BoardFrame.load(), "camera": None, "camera_failed": False,
+             "jog_taught": {}}
+    if SIM:
+        import Arm_Lib
+        Arm_Lib.reset(config.POSE_REST)
     try:
         arm = Arm()
     except Exception as e:
@@ -443,19 +642,24 @@ def main():
         return
     with arm:
         arm.interactive = False          # never stop mid-move to ask
-        arm.skip_park = True             # quitting (or a crash) never moves the arm
+        arm.skip_park = True             # quitting (or a crash) never moves by itself
         arm.set_board(state["frame"])
         home = look_pose.load()
         if home:
             arm.home_pose = home
+        state["view_url"] = start_view(arm, state)
+        if state["view_url"]:
+            print("Live 3D view: %s (open it in a browser on your laptop)" % state["view_url"])
+        if log_path:
+            print("Session log: %s" % os.path.relpath(log_path, config.ROOT))
         start(arm)
 
         while True:
             print("\n" + status_line(arm, state))
             for key, name, note in MENU:
-                print("  %s  %-22s %s" % (key, name, note))
+                print("  %s  %-24s %s" % (key, name, note))
             if arm.blocked:
-                print("  c  Carry on             you looked at the arm and the way is clear")
+                print("  c  Carry on               you looked at the arm and the way is clear")
             try:
                 choice = input("Choose: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
@@ -471,22 +675,35 @@ def main():
             elif choice == "4":
                 self_test_screen(arm, state)
             elif choice == "5":
-                camera_screen(state)
+                keyboard_screen(arm, state)
             elif choice == "6":
+                camera_screen(state)
+            elif choice == "7":
                 look_screen(arm, state)
+            elif choice == "8":
+                electronics_screen(arm, state)
             elif choice == "c" and arm.blocked:
                 arm.clear_block()
                 print("  OK -- moves are allowed again. Nothing moved.")
-            elif choice in ("0", "q"):
+            elif choice == "0":
+                if can_move(arm):
+                    do(arm, rest, arm)
+                break
+            elif choice == "q":
                 break
 
     if state["camera"] is not None:
         state["camera"].stop()
+    if state.get("view"):
+        state["view"].shutdown()
     print("Bye! The arm is holding where it is.")
 
 
 if __name__ == "__main__":
     try:
-        main()
+        if "--check" in sys.argv:
+            check()
+        else:
+            main()
     except KeyboardInterrupt:
         print("\nStopped. (Ctrl-C never moves the arm.)")

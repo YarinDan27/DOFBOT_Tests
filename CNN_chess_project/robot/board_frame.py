@@ -142,18 +142,24 @@ class BoardFrame:
         cos_a = sum(u[i] * v[i] for i in range(3)) / (_length(u) * _length(v))
         return math.degrees(math.acos(max(-1.0, min(1.0, cos_a))))
 
-    def reach_map(self):
+    def reach_map(self, zone=None):
         """
         square -> 'ok'  : reachable at grabbing height AND hover height
                   'low' : grabbing height only (arm can't hover above it)
                   '--'  : out of reach
         Both heights matter: every pick-up starts from the hover point.
+        With a World (robot/world.py): only counting poses whose shape is
+        clear of the electronics, base and table.
         """
+        def clear(sol):
+            return zone.margin([sol[1], sol[2], sol[3], sol[4]])[0] >= 0.0
+
+        accept = clear if zone is not None and hasattr(zone, "margin") else None
         out = {}
         for square in all_squares():
             x, y, z = self.square_xyz(square)
-            grab = kinematics.solve_reachable(x, y, z)[0] is not None
-            hover = kinematics.solve_reachable(x, y, z + config.HOVER_MM)[0] is not None
+            grab = kinematics.solve_reachable(x, y, z, accept)[0] is not None
+            hover = kinematics.solve_reachable(x, y, z + config.HOVER_MM, accept)[0] is not None
             out[square] = "ok" if (grab and hover) else ("low" if grab else "--")
         return out
 

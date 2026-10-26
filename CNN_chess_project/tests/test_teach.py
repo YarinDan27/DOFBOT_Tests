@@ -300,8 +300,8 @@ check("map printed with the legend", "not tested yet" in out and "* = you taught
 check("hovered and measured e5", "Hovering over e5: off by" in out)
 check("moved a piece", "Moved e3 -> e4" in out)
 check("self-test measured squares", "Self-test: hovering" in out and "[1/" in out)
-check("ends home, power on", Arm_Lib.STATE["torque"] and
-      all(abs(Arm_Lib.STATE["pos"][i] - home[i - 1]) <= 4 for i in range(1, 5)))
+check("0 = rest and quit: ends folded back at rest, power on", Arm_Lib.STATE["torque"] and
+      all(abs(Arm_Lib.STATE["pos"][i] - config.POSE_REST[i - 1]) <= 4 for i in range(1, 5)))
 check("never touched the board", Arm_Lib.STATE["contacts"] == 0,
       "%d contacts" % Arm_Lib.STATE["contacts"])
 results = self_test.latest_results(BoardFrame.load())
@@ -313,7 +313,7 @@ pose = hand_pose("e4")
 Arm_Lib.reset(silent_wrist(pose))
 Arm_Lib.STATE["torque"] = False
 start_scenario([(5.0, None), (2.0, pose)])
-ANSWERS[:] = [("Choose", "0")]
+ANSWERS[:] = [("Choose", "q")]
 before = dict(Arm_Lib.STATE["pos"])
 _, out = quiet(run_mod.main)
 check("said which joint and what to do", "wrist" in out and "straighten the wrist" in out)
@@ -327,7 +327,7 @@ print("\n--- 7c. run.py: stiff arm (power on) with a joint that can't report ---
 pose = hand_pose("e4")
 Arm_Lib.reset(pose[:2] + [-30.0] + pose[3:])       # elbow far past its scale, power ON
 start_scenario([(3.0, None), (2.0, pose)])
-ANSWERS[:] = [("Choose", "0")]
+ANSWERS[:] = [("Choose", "q")]
 Arm_Lib.STATE["beeps"] = []
 _, out = quiet(run_mod.main)
 check("countdown, then power off so you can move it", "Power goes OFF in" in out
@@ -364,7 +364,7 @@ print("\n--- 7a. run.py from Yahboom's folded pose (shoulder ~182, wrist ~-2) --
 FOLD = [86.0, 182.0, 18.0, -2.0, 91.0, 166.0]
 Arm_Lib.reset(FOLD)
 start_scenario([], limit_s=3000)
-ANSWERS[:] = [("Choose", "0")]
+ANSWERS[:] = [("Choose", "q")]
 _, out = quiet(run_mod.main)
 check("reads the joints past the end of their scale", "can't report" not in out
       and "Waiting for every joint" not in out)

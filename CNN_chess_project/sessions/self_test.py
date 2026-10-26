@@ -30,9 +30,9 @@ def _distance(a, b):
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
 
-def test_order(frame):
+def test_order(frame, zone=None):
     """Every square the arm can hover over, row by row in a snake (short moves)."""
-    reach = frame.reach_map()
+    reach = frame.reach_map(zone)
     order = []
     for rank in range(1, 9):
         row = [f + str(rank) for f in FILES]
@@ -127,7 +127,7 @@ def run(arm, frame, camera=None, squares=None):
     Returns all results for this board (old + new). ArmBlocked is re-raised
     after the results are saved.
     """
-    squares = squares or test_order(frame)
+    squares = squares or test_order(frame, arm.zone)
     session = time.strftime("%Y%m%d-%H%M%S")
     photo_dir = os.path.join(config.DATA_DIR, "self_test", session)
     print("\n--- Self-test: hovering %.0f mm above %d squares, no touching. "

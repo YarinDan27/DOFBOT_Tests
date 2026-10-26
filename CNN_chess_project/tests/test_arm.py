@@ -69,7 +69,7 @@ Arm_Lib.reset()
 ANSWERS[:] = [("Enter = go home slowly", "", None)]
 a = arm_mod.Arm()
 a.start_up()
-check("goes to the ready pose", at(config.POSE_READY))
+check("goes home (resting, folded back)", at(config.POSE_REST))
 check("never touched the board", Arm_Lib.STATE["contacts"] == 0)
 check("not blocked", not a.blocked)
 
@@ -78,7 +78,7 @@ Arm_Lib.reset(low_pose())
 ANSWERS[:] = [("Enter = go home slowly", "", None)]
 a = arm_mod.Arm()
 a.start_up()
-check("rises and goes home", at(config.POSE_READY))
+check("rises and goes home", at(config.POSE_REST))
 check("never pushed into the board", Arm_Lib.STATE["contacts"] == 0)
 
 print("\n--- 3. a servo misreports (like today): the arm must stop, not push ---")
@@ -151,17 +151,17 @@ ANSWERS[:] = [("HOLD THE ARM and press Enter", "", None),
 a = arm_mod.Arm()
 check("power stayed off-limits at first (no blind switch-on)", not a.powered)
 a.start_up()
-check("after you moved it, it starts and goes home", at(config.POSE_READY))
+check("after you moved it, it starts and goes home", at(config.POSE_REST))
 
-print("\n--- 5. a joint past the move limits: power on in place, come back in checked steps ---")
-Arm_Lib.reset([90, 90, 90, 178, 90, 150])     # wrist past its 170 limit
+print("\n--- 5. a joint just past the end of its scale: power on in place, then home ---")
+Arm_Lib.reset([90, 90, 90, 185, 90, 150])     # wrist past 180: reads via the wide read
 before = dict(Arm_Lib.STATE["pos"])
 a = arm_mod.Arm()
 check("switches on without moving (no jump)", a.powered and all(
     abs(Arm_Lib.STATE["pos"][i] - before[i]) < 1.5 for i in range(1, 5)))
 ANSWERS[:] = [("Enter = go home slowly", "", None)]
 a.start_up()
-check("then goes home inside the limits", at(config.POSE_READY))
+check("then goes home", at(config.POSE_REST))
 check("without touching anything", Arm_Lib.STATE["contacts"] == 0)
 
 print("\n--- 5a. tonight's pose: left limp at a2, elbow at 4 ---")
@@ -175,23 +175,27 @@ ANSWERS[:] = [("Enter = go home slowly", "", None),
 a = arm_mod.Arm()
 check("switches on where it lies (no endless 'try again')", a.powered)
 a.start_up()
-check("gets home", at(config.POSE_READY))
+check("gets home", at(config.POSE_REST))
 check("without pushing into the board", Arm_Lib.STATE["contacts"] == 0)
 
-print("\n--- 5b. teaching: an elbow past the robot's own limit is still recorded ---")
+print("\n--- 5b. teaching: an elbow at 4 (refused by the old per-servo limits) ---")
 from sessions import teach                                     # noqa: E402
 Arm_Lib.reset()
 a = arm_mod.Arm()
 a.limp()
-Arm_Lib.set_pose([90, 30, 4, 60, 90, 150])     # like a2 tonight: elbow at 4 (limit 10)
+Arm_Lib.set_pose([118, 79, 4, 26, 89, 166])    # the real a2 reading: elbow at 4
 point = teach._record(a, None, "a2", TMP)
 check("records the square instead of asking again", point is not None)
 before = dict(Arm_Lib.STATE["pos"])
 a.stiffen_here()
 check("power comes back on right there, without moving", a.powered and all(
     abs(Arm_Lib.STATE["pos"][i] - before[i]) < 1.5 for i in range(1, 5)))
-check("a look pose there would still be refused, with which way to move",
-      "tilt it back up" in (arm_mod.pose_problem(a.read_angles(3)) or ""))
+check("and it's a pose the robot may use (no per-servo limit)",
+      arm_mod.pose_problem(a.read_angles(3), a.zone) is None)
+a.limp()
+Arm_Lib.set_pose([90, 190, 180, 180, 90, 150])  # folded back into the electronics
+check("a pose inside the electronics is refused, saying what it hits",
+      "electronics" in (arm_mod.pose_problem([90, 180, 120, 90, 90, 150], a.zone) or ""))
 
 print("\n--- 6. Ctrl-C at the start question: nothing moves ---")
 Arm_Lib.reset(low_pose())

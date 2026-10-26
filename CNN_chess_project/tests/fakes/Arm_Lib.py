@@ -10,10 +10,13 @@ It behaves like the real arm in the ways that matter for safety:
   * READ_BIAS makes a servo report the wrong angle (the suspected cause of
     the 2026-10-24 crash); SILENT makes a servo never answer
   * with power off, servos stay wherever the test puts them (set_pose)
+  * (v2.5) the electronics box and turning base are solid too
+  * run.py --sim uses this file as the arm, so you can try the program without one
 """
 import random
 
-from robot import safety
+import config
+from robot import body, safety
 
 STATE = {"pos": {i: 90.0 for i in range(1, 7)}, "torque": True, "contacts": 0,
          "beeps": [], "lights": []}   # beeps: 100 ms units per beep; lights: (r, g, b)
@@ -38,13 +41,34 @@ def set_pose(pose):
         STATE["pos"][i] = float(pose[i - 1])
 
 
+# The real electronics box and turning base (the program only has a model of
+# them; here they are "real": a link's centre line entering one is a contact).
+ELECTRONICS = dict(config.ELECTRONICS)
+
+
+def _inside_solid(link, p):
+    e = ELECTRONICS
+    if (e["x"][0] <= p[0] <= e["x"][1] and e["y"][0] <= p[1] <= e["y"][1]
+            and e["z"][0] <= p[2] <= e["z"][1]):
+        return True
+    if link != "upper arm":
+        for part in config.TURRET:
+            if (part["z"][0] <= p[2] <= part["z"][1]
+                    and (p[0] ** 2 + p[1] ** 2) ** 0.5 <= part["radius"]):
+                return True
+    return False
+
+
 def touching(angles):
-    """Would any part of the arm be inside the board or the table?"""
+    """Would any part of the arm be inside the board, the table, the electronics or the base?"""
     for x, y, z in safety.link_points(angles):
         if z < TABLE_Z:
             return True
         if (z < BOARD["z"] and BOARD["x"][0] <= x <= BOARD["x"][1]
                 and BOARD["y"][0] <= y <= BOARD["y"][1]):
+            return True
+    for link, p, _ in body.sample_points(angles, 8.0):
+        if _inside_solid(link, p):
             return True
     return False
 

@@ -55,23 +55,41 @@ def forward(servo1, servo2, servo3, servo4):
     return x, y, z, math.degrees(a3)
 
 
-def within_limits(servos):
+def within_limits(servos, comfort=False):
+    """
+    Inside what each servo can do (config.JOINT_RANGE). Not a safety check:
+    robot/world.py decides whether the arm's shape is clear. comfort=True:
+    inside config.JOINT_COMFORT instead -- well within the servos' 0-180
+    scale, where the robot plans its own moves when it can.
+    """
+    ranges = config.JOINT_COMFORT if comfort else config.JOINT_RANGE
     for sid, value in servos.items():
-        lo, hi = config.SERVO_LIMITS[sid]
+        lo, hi = ranges.get(sid, config.JOINT_RANGE[sid])
         if not (lo <= value <= hi):
             return False
     return True
 
 
-def solve_reachable(x, y, z):
-    """Tries straight down first, tilts the hand only if it has to."""
-    app = config.APPROACH_STRAIGHT
-    while app >= config.APPROACH_MIN:
-        servos = inverse(x, y, z, approach_deg=app)
-        if servos is not None and within_limits(servos):
-            return servos, app
-        app -= 2.0
+def solve_reachable(x, y, z, accept=None):
+    """
+    Tries straight down first, tilts the hand only if it has to -- first
+    keeping every joint comfortably inside its scale, then using the whole
+    range. `accept`: an optional extra test (e.g. "the arm's shape is clear").
+    """
+    for comfort in (True, False):
+        app = config.APPROACH_STRAIGHT
+        while app >= config.APPROACH_MIN:
+            servos = inverse(x, y, z, approach_deg=app)
+            if servos is not None and within_limits(servos, comfort) and (
+                    accept is None or accept(servos)):
+                return servos, app
+            app -= 2.0
     return None, None
+
+
+def _wrap(angle):
+    """Radians into -pi..pi (the same joint angle, the way a servo counts it)."""
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def inverse(x, y, z, approach_deg=180.0, prefer=None):
@@ -113,8 +131,8 @@ def inverse(x, y, z, approach_deg=180.0, prefer=None):
         ex = L1 * math.sin(t2)
         ez = H + L1 * math.cos(t2)
         psi = math.atan2(wrist_r - ex, wrist_z - ez)
-        t3 = psi - t2
-        t4 = a3 - t2 - t3
+        t3 = _wrap(psi - t2)
+        t4 = _wrap(a3 - t2 - t3)
 
         servos = {
             1: servo1,
@@ -122,7 +140,7 @@ def inverse(x, y, z, approach_deg=180.0, prefer=None):
             3: tilt_to_servo(math.degrees(t3)),
             4: tilt_to_servo(math.degrees(t4)),
         }
-        if all(0.0 <= v <= 180.0 for v in servos.values()):
+        if within_limits(servos):
             if prefer is None:
                 # elbow-forward solution (keeps it away from the electronics)
                 score = servos[2]
