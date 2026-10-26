@@ -8,7 +8,7 @@ A DOFBOT Pro that plays chess: a camera and a convolutional neural network (CNN)
 cd ~/YDscripts/CNN_chess_project && python3 run.py
 ```
 
-**v2.4.2.** No questions at start-up. The banner shows the version and what was last fixed. Power comes on right where the arm is, it says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: up first, then across. Home is the camera view you taught (option 6), or the ready pose until then.
+**v2.4.3.** No questions at start-up. The banner shows the version and what was last fixed. Power comes on right where the arm is, it says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: up first, then across. Home is the camera view you taught (option 6), or the ready pose until then.
 
 | Menu | What it does |
 |---|---|
@@ -26,7 +26,7 @@ cd ~/YDscripts/CNN_chess_project && python3 run.py
 Put a **pawn** on each square to teach (default b3 g3 b6 g6 e5). Choose 1 and press Enter. The arm closes its claw and comes down low over the board. Then walk over:
 
 1. **Countdown:** beeps for the last 5 s, then a **long beep**. Power is off, so be holding the arm by then.
-2. For each square in order, put the **closed claw tip on top of the pawn**, with the claw **tilted 15–30°** (perfectly vertical bends the wrist past what its servo can report), and **hold still 2 s**. Beeps = how many squares are done (1, 2, 3…).
+2. For each square in order, put the **closed claw tip on top of the pawn**, with the claw pointing down or tilted a little, and **hold still 2 s**. Beeps = how many squares are done (1, 2, 3…).
 3. Light: **blue** = waiting, **red** = a joint can't report (tilt the claw a bit more), **green** = recorded.
 4. After the last square: a **long beep**. Power is back on and the arm holds itself. Let go.
 
@@ -66,6 +66,7 @@ python3 tests/test_geometry.py && python3 tests/test_safety.py && python3 tests/
 - **Right after power-on, every servo must be where it said it was**, and the readings must make physical sense (no part of the arm under the table). Otherwise a servo is misreporting: it stops.
 - **Only one program on the arm.** At start it looks for Yahboom's ROS arm driver (`arm.launch`, started at boot) and for another copy of this program, which would send their own commands to the same servos and hold the camera. Stop the ROS driver with `sudo pkill -f arm.launch`.
 - **Ctrl-C never moves the arm**, and neither does quitting.
+- **(2.4.3) Joints a little past the end of their scale still report.** Yahboom's `Arm_serial_servo_read` returns nothing outside 0–180°, so the folded pose (shoulder ~182°) or a vertical claw on a piece (wrist ~−5°) looked like a dead servo. `robot/arm.py` reads the same register with the same maths, up to 20° past either end. It does *not* use `Arm_serial_servo_read_any`: that one skips the flip servos 2–4 need, so a wrist at −6° reads as 186°, the likely cause of the 2026-10-24 crash.
 - **(2.4.2) Straight lines never flip the elbow halfway.** Every 10 mm step must follow on from the one before (no joint turns more than 6°). Near the base the step is split finer. Before, a line could jump between two elbow solutions in one step.
 - Every command and read-back is logged in `logs/motion/`.
 - `python3 tests/test_arm.py` runs the real arm code against a simulated arm that stalls on the board and can misreport a servo. Nothing moves.

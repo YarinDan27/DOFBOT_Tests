@@ -158,8 +158,8 @@ def hand_pose(sq, tilt_first=20, off_x=0.0):
 
 
 def silent_wrist(pose):
-    """Same place, but the wrist bent past its scale: it can't report."""
-    return pose[:3] + [-6.0] + pose[4:]
+    """Same place, but the wrist bent far past its scale: it can't report."""
+    return pose[:3] + [-30.0] + pose[4:]
 
 
 HIGH_POSE = [90.0, 90.0, 90.0, 60.0, 90.0, config.CLAW_MAX]    # claw way up high
@@ -292,7 +292,7 @@ ANSWERS[:] = [("Choose", "3"), ("A square = hover", "e5"), ("A square = hover", 
 _, out = quiet(run_mod.main)
 home = look_pose.load()
 check("banner shows the version and the last fix",
-      "v2.4.2" in out and "Last fix:" in out)
+      "v%s" % config.VERSION in out and "Last fix:" in out)
 check("start-up asked nothing; menu answers all used", not ANSWERS)
 check("went home by itself at start-up", "Going home in 3 s" in out and "Home." in out)
 check("map printed with the legend", "not tested yet" in out and "* = you taught it" in out)
@@ -320,6 +320,29 @@ check("powered on by itself once it could", "Power is on" in out and Arm_Lib.STA
 check("didn't move afterwards (you may be holding it)",
       all(abs(Arm_Lib.STATE["pos"][i] - pose[i - 1]) <= 1 for i in range(1, 5)))
 check("no questions besides the menu", not ANSWERS)
+
+# =====================================================================
+print("\n--- 7a. run.py from Yahboom's folded pose (shoulder ~182, wrist ~-2) ---")
+FOLD = [86.0, 182.0, 18.0, -2.0, 91.0, 166.0]
+Arm_Lib.reset(FOLD)
+start_scenario([], limit_s=3000)
+ANSWERS[:] = [("Choose", "0")]
+_, out = quiet(run_mod.main)
+check("reads the joints past the end of their scale", "can't report" not in out
+      and "Waiting for every joint" not in out)
+check("powers on in place and goes home by itself", "Going home in 3 s" in out and "Home." in out)
+check("ends home", all(abs(Arm_Lib.STATE["pos"][i] - home[i - 1]) <= 4 for i in range(1, 5)))
+check("never touched the board", Arm_Lib.STATE["contacts"] == 0)
+
+print("\n--- 7a2. a wrist just past 0 (claw vertical on a piece) still reports ---")
+Arm_Lib.reset()
+a = arm_mod.Arm()
+Arm_Lib.set_pose([90.0, 60.0, 30.0, -5.0, 90.0, 150.0])
+got = a.read_angles(samples=1)
+check("wrist reads about -5 (not nothing, not 185)", got[3] is not None and abs(got[3] + 5) <= 2,
+      str(got[3]))
+Arm_Lib.set_pose([90.0, 60.0, 30.0, -30.0, 90.0, 150.0])
+check("far past the scale = no answer", a.read_angles(samples=1)[3] is None)
 
 # =====================================================================
 print("\n--- 7b. every command in every motion log was a small step ---")

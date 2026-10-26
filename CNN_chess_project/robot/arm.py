@@ -262,17 +262,54 @@ class Arm:
 
     def read_servo(self, servo_id):
         """
-        One servo's angle, or None. (Arm_Lib returns None when the angle is
-        outside 0-180, e.g. a joint pushed past its range. There is NO fallback:
-        v0.2.1 tried Arm_serial_servo_read_any, and a bad reading from it is the
-        likely cause of the 2026-10-24 crash.)
+        One servo's angle, or None.
+
+        Arm_Lib's Arm_serial_servo_read throws away any angle outside 0-180
+        (servo 5: 0-270) -- so a joint just past the end of its scale, like
+        the shoulder at ~182 in the folded pose, or the wrist at -5 with the
+        claw vertical on a piece, looks like "no answer". When that happens,
+        _read_wide reads the same register with the same maths, minus that
+        cut-off: up to WIDE_READ_DEG past either end.
+
+        (NOT Arm_serial_servo_read_any: it skips the 180-minus flip that
+        servos 2-4 need, so a wrist at -6 comes back as 186. That is what v0.2.1
+        used, and the likely cause of the 2026-10-24 crash.)
         """
         for _ in range(3):
             value = self.bus.Arm_serial_servo_read(servo_id)
             if value is not None:
                 return float(value)
+            value = self._read_wide(servo_id)
+            if value is not None:
+                return value
             time.sleep(0.05)
         return None
+
+    def _read_wide(self, servo_id):
+        """Arm_serial_servo_read without the 0-180 cut-off (see read_servo)."""
+        bus = getattr(self.bus, "bus", None)
+        addr = getattr(self.bus, "addr", None)
+        if bus is None or addr is None:
+            return None
+        try:
+            bus.write_byte_data(addr, servo_id + 0x30, 0x0)
+            time.sleep(0.003)
+            word = bus.read_word_data(addr, servo_id + 0x30)
+        except Exception:
+            return None
+        if not word:
+            return None                         # 0 = no data from that servo
+        pos = (word >> 8 & 0xff) | (word << 8 & 0xff00)
+        if servo_id == 5:
+            angle, top = 270.0 * (pos - 380) / (3700 - 380), 270.0
+        else:
+            angle, top = 180.0 * (pos - 900) / (3100 - 900), 180.0
+        if not -config.WIDE_READ_DEG <= angle <= top + config.WIDE_READ_DEG:
+            return None
+        angle = int(angle)                      # whole degrees, like Arm_Lib
+        if servo_id in (2, 3, 4):
+            angle = 180 - angle                 # same flip as Arm_Lib
+        return float(angle)
 
     def read_all(self):
         return [self.read_servo(i) for i in range(1, 7)]

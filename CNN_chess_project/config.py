@@ -7,9 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "2.4.2"
-VERSION_NOTE = ("hands-free teaching at the arm (hold still to record, beeps + light), "
-                "no start-up questions, coloured board map, camera test")
+VERSION = "2.4.3"
+VERSION_NOTE = ("joints a little past the end of their scale now report (the folded "
+                "pose, a vertical claw on a piece) -- no more waiting for them")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -84,6 +84,8 @@ IMPOSSIBLE_BELOW_MM = 40.0 # readings that put the arm this far under the board 
                            # is misreporting: don't move at all
 LIMIT_SLACK_DEG = 3.0      # a reading this far past a limit is still trusted (and nudged
                            # back onto it); further than that = don't power on or move
+WIDE_READ_DEG = 20.0       # a joint up to this far past the end of its 0-180 scale still
+                           # reports (Arm_Lib alone says nothing past the end)
 
 # ---------- motion planning ----------
 HOVER_MM = 45.0            # how high above a piece to hover before descending

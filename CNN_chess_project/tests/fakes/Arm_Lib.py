@@ -49,7 +49,38 @@ def touching(angles):
     return False
 
 
+def _raw(servo_id, angle):
+    """The servo's own number for an angle, the way the real board reports it."""
+    if servo_id in (2, 3, 4):
+        angle = 180.0 - angle
+    if servo_id == 5:
+        return int((3700 - 380) * angle / 270.0 + 380)
+    return int((3100 - 900) * angle / 180.0 + 900)
+
+
+class FakeSMBus:
+    """The I2C bus underneath: what Arm_Lib (and robot/arm.py's wide read) talk to."""
+
+    def __init__(self):
+        self.asked = None
+
+    def write_byte_data(self, addr, register, value):
+        self.asked = register
+
+    def read_word_data(self, addr, register):
+        servo_id = register - 0x30
+        if servo_id in SILENT or not 1 <= servo_id <= 6:
+            return 0
+        angle = STATE["pos"][servo_id] + READ_BIAS.get(servo_id, 0.0) + random.gauss(0, 0.3)
+        pos = max(1, _raw(servo_id, angle))
+        return (pos >> 8 & 0xff) | (pos << 8 & 0xff00)     # bytes swapped, like the real one
+
+
 class Arm_Device:
+    def __init__(self):
+        self.addr = 0x15
+        self.bus = FakeSMBus()
+
     def Arm_serial_set_torque(self, onoff):
         STATE["torque"] = bool(onoff)
 

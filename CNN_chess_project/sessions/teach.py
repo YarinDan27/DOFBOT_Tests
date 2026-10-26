@@ -20,9 +20,9 @@ The arm's light while teaching:
 To stop early: lift the claw up high and hold still for 4 s. It switches
 power back on right there (two beeps) and keeps what you've taught so far.
 
-Holding the claw perfectly vertical on top of a piece bends the wrist past
-the end of its servo's 0-180 scale, where it can't report -- that's why it's
-held tilted about 15-30 degrees. Only the claw tip's position is used.
+A joint bent more than config.WIDE_READ_DEG past the end of its servo's
+0-180 scale can't report (red light) -- tilting the claw a little fixes it.
+Only the claw tip's position is used.
 
 Teach 4 or more squares and it checks your work: a touch that disagrees with
 the others by more than config.TEACH_MAX_RESIDUAL_MM is flagged, and you redo
