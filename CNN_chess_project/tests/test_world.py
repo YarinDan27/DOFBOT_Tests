@@ -28,6 +28,7 @@ import config                                                 # noqa: E402
 assert "fakes" in Arm_Lib.__file__, "refusing to run against the real arm"
 TMP = tempfile.mkdtemp()
 config.LOGS_DIR = os.path.join(TMP, "logs")
+config.LOCK_FILE = os.path.join(TMP, "arm.lock")
 config.DATA_DIR = os.path.join(TMP, "data")
 config.CALIBRATION_DIR = os.path.join(TMP, "calibration")
 config.BOARD_FILE = os.path.join(config.CALIBRATION_DIR, "board_arm.json")
@@ -40,7 +41,11 @@ from robot.board_frame import BoardFrame                      # noqa: E402
 from sessions import electronics, jog                         # noqa: E402
 from viz import live, scene                                   # noqa: E402
 
-time.sleep = lambda s: None
+# a pretend clock: sleeping moves it on instantly, so moves take no real time
+CLOCK = [1000.0]
+REAL_TIME = time.time
+time.time = lambda: CLOCK[0]
+time.sleep = lambda s: CLOCK.__setitem__(0, CLOCK[0] + max(0.0, float(s)))
 random.seed(3)
 failures = []
 
@@ -109,9 +114,9 @@ for name, a, b in (("fold -> ready", FOLD, config.POSE_READY),
                    ("ready -> rest", config.POSE_READY, REST),
                    ("upright -> ideal rest", [90, 90, 90, 90, 90, 150], IDEAL),
                    ("a2 reading -> rest", [118, 79, 4, 26, 89, 166], REST)):
-    t0 = time.time()
+    t0 = REAL_TIME()
     stages = safety.plan_pose_move(a, b, W)
-    worst_time = max(worst_time, time.time() - t0)
+    worst_time = max(worst_time, REAL_TIME() - t0)
     ok = stages is not None
     detail = ""
     if ok:

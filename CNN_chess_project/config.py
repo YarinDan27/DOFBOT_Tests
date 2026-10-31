@@ -7,9 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "2.5.0"
-VERSION_NOTE = ("safety from the arm's real shape (electronics, base, board) instead of "
-                "per-servo limits; smooth motion; keyboard control; live 3D view; --sim")
+VERSION = "2.6.0"
+VERSION_NOTE = ("lessons from Microduck: every command through one safety gate, a "
+                "fixed-rate motor loop, one program on the arm, servos that sag in --sim")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -130,9 +130,19 @@ JOINT_SPEED_DEG_S = 40.0   # top joint speed (slow on purpose: ~2.5 s for 90 deg
 JOINT_ACCEL_DEG_S2 = 80.0  # how quickly it gets up to speed and slows down
 CONTROL_DT = 0.1           # seconds between targets while moving; every one is read back
 LINE_SPEED_MM_S = 60.0     # straight lines (going down to a piece): claw speed
+READ_MISS_LIMIT = 3         # reads in a row that may get no answer mid-move before it
+                           # holds still (one miss just pauses the move for a tick)
+GATE_STEP_DEG = 15.0       # no single command may move servos 1-4 further than this from
+                           # where they were last sent (moves go in steps of a few degrees)
 
 # ---------- read-back checks (robot/arm.py) ----------
-STALL_DEG = 6.0            # a servo this far short of where it was sent = blocked: stop
+STALL_DEG = 6.0            # a joint this far behind AND no longer following its
+                           # commands = something is in the way: stop (motion.StallWatch)
+STALL_LAG_MAX = 14.0       # this far behind = stop, whatever it's doing
+SETTLE_DEG = 8.0           # at the end of a move every joint must be this close (a loaded
+                           # servo sags a few degrees short of its target)
+SETTLE_CLOSE_DEG = 2.0     # ...and before the next move starts, it's either this close
+SETTLE_STILL_DEG = 1.5     # or has stopped moving (changed less than this since last read)
 IMPOSSIBLE_BELOW_MM = 40.0 # readings that put the arm this far under the board = a servo
                            # is misreporting: don't move at all
 WIDE_READ_DEG = 20.0       # a joint up to this far past the end of its 0-180 scale still
@@ -189,6 +199,7 @@ CAMERA_FREE_DEVICE = True  # on start, stop other programs holding the camera (f
 CAMERA_RELEASE_S = 2.0     # wait after freeing it (and between tries) for the device to let go
 WEB_PORT = 8080
 VIEW_PORT = 8081           # live 3D view of the arm: http://<jetson>:8081
+LOCK_FILE = "/tmp/dofbot_arm.lock"   # one program drives the arm at a time
 CAM_WIDTH = 640     # smaller frames compress faster; try 320 if it's still slow
 CAM_HEIGHT = 480
 JPEG_QUALITY = 50   # stream quality, 1-100. lower = blurrier but faster

@@ -31,6 +31,7 @@ replayed afterwards.
 import json
 import math
 import os
+import sys
 import threading
 import time
 
@@ -181,6 +182,48 @@ def _distance(a, b):
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
 
+_LOCK = {"file": None}
+
+
+def take_bus_lock():
+    """
+    Only one program drives the arm (after Microduck's robotd, which holds a
+    lock on its bus for as long as it runs). An exclusive lock on
+    config.LOCK_FILE, kept until this program exits -- the system lets go of
+    it even if the program is killed. A second copy gets a RuntimeError
+    naming the first. The file itself is never deleted.
+    """
+    if _LOCK["file"] is not None:
+        return
+    try:
+        import fcntl
+    except ImportError:          # not Linux: nothing to lock with
+        return
+    folder = os.path.dirname(config.LOCK_FILE)
+    if folder and not os.path.isdir(folder):
+        os.makedirs(folder)
+    fh = open(config.LOCK_FILE, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        fh.seek(0)
+        owner = fh.read().strip()
+        fh.close()
+        raise RuntimeError("another program is driving the arm (%s) -- only one may at a "
+                           "time" % (owner or "it didn't say which"))
+    fh.seek(0)
+    fh.truncate()
+    fh.write("pid %d: %s" % (os.getpid(), " ".join(sys.argv)[:120]))
+    fh.flush()
+    _LOCK["file"] = fh
+
+
+def _outside_by(servo_id, angle):
+    """How far past its range a servo target is (0 = inside)."""
+    low, high = config.JOINT_RANGE[servo_id]
+    return max(0.0, low - angle, angle - high)
+
+
 def _clamp(servo_id, angle):
     low, high = config.JOINT_RANGE[servo_id]
     return max(low, min(high, angle))
@@ -190,6 +233,7 @@ class Arm:
     def __init__(self, power_on=True):
         # Imported here, not at the top, so the planning code can still be
         # imported and tested on the laptop, where Arm_Lib doesn't exist.
+        take_bus_lock()
         from Arm_Lib import Arm_Device
         self.bus = Arm_Device()
         # one I2C conversation at a time (the live 3D view runs in a thread)
@@ -205,8 +249,17 @@ class Arm:
         self.home_pose = list(config.POSE_REST)
         # for the live 3D view: what the servos last said / were last sent
         self.last_angles = [None] * 6
+        self.last_read = [None] * 6     # what the servos last SAID (last_angles also takes sends)
         self.last_seen_t = 0.0
         self.last_plan = []         # [[s1..s4], ...] of the move being made
+        # what each servo was last sent: the gate compares every command with it
+        self.sent = [None] * 6
+        # how close to something solid the arm was when last FOUND somewhere
+        # (power-on, holding still): moves may never take it closer than that
+        self._floor_margin = None
+        # how the control loop is doing (shown in the 3D view, saved in the log)
+        self.health = {"moves": 0, "ticks": 0, "overruns": 0, "read_misses": 0,
+                       "refused": 0, "worst_tick_s": 0.0, "hz": None}
         self._log_file = None
         self._open_log()
         # Power on aimed at where it already is -- only if servos 1-4 answer.
@@ -285,12 +338,68 @@ class Arm:
                 "servo %d angle %.1f is past its range %s-%s" % (servo_id, angle, low, high))
 
     def _write(self, servo_id, angle, duration_ms):
+        """The bus write itself. Only _gate()-checked moves and hold-still
+        commands (stay exactly where you are) call this."""
         with self.bus_lock:
             self.bus.Arm_serial_servo_write(servo_id, int(round(angle)), int(duration_ms))
         self.last_angles[servo_id - 1] = float(angle)
+        self.sent[servo_id - 1] = float(angle)
+
+    def _found_at(self, angles):
+        """The arm was found here (not sent): how close it is becomes the floor."""
+        if hasattr(self.zone, "margin") and None not in list(angles[:4]):
+            self._floor_margin = self.zone.margin(list(angles[:4]))[0]
+
+    def _refuse(self, error):
+        self.health["refused"] += 1
+        self.log("refused", why=str(error))
+        raise error
+
+    def _gate(self, angles):
+        """
+        The last check before a move command reaches a motor, whoever planned
+        it -- after Microduck's safety layer, which owns the only write
+        handle so nothing above it can send a target unchecked. Refused (not
+        clamped), and nothing is sent, if:
+          * a target isn't a number
+          * it's past what the servo can do (JOINT_RANGE) -- unless it's on
+            the way back in from further out
+          * servos 1-4 would jump more than GATE_STEP_DEG from where they were
+            last sent: every planned move goes in small steps, so a big jump
+            means a bug
+          * the commanded pose is too close to something solid
+            (robot/world.py) -- unless the arm was FOUND at least that close
+            (powered on there, or stopped there), when it may move about but
+            never closer: a move can't creep in a little at a time
+        """
+        for sid, a in angles.items():
+            if not isinstance(a, (int, float)) or not math.isfinite(a):
+                self._refuse(UnsafeAngle("servo %d was sent %r, which isn't an angle" % (sid, a)))
+            last = self.sent[sid - 1]
+            over = _outside_by(sid, a)
+            if over > 0.0 and (last is None or over > _outside_by(sid, last) + 0.5):
+                low, high = config.JOINT_RANGE[sid]
+                self._refuse(UnsafeAngle("servo %d angle %.1f is past its range %s-%s"
+                                         % (sid, a, low, high)))
+            if sid <= 4 and last is not None and abs(a - last) > config.GATE_STEP_DEG:
+                self._refuse(UnsafeMove(
+                    "servo %d (%s) was told to jump %.0f degrees in one go -- moves go in small "
+                    "steps, so that's a bug; nothing was sent" % (sid, SERVO_NAMES[sid],
+                                                                  abs(a - last))))
+        joints = [angles.get(sid, self.sent[sid - 1]) for sid in (1, 2, 3, 4)]
+        if None in joints or not hasattr(self.zone, "margin"):
+            return
+        # the servos get whole degrees (_write rounds): check exactly that pose
+        joints = [float(int(round(a))) for a in joints]
+        m, link, ob, _ = self.zone.margin(joints)
+        floor = self._floor_margin if self._floor_margin is not None else 0.0
+        if m < 0.0 and m < min(floor, 0.0) - 0.5:
+            self._refuse(UnsafeMove("that would put the %s too close to the %s; nothing "
+                                    "was sent" % (link, ob)))
 
     def set_servo(self, servo_id, angle, duration_ms=400):
         self._check(servo_id, angle)
+        self._gate({servo_id: angle})
         self._write(servo_id, angle, duration_ms)
 
     def read_servo(self, servo_id):
@@ -367,33 +476,67 @@ class Arm:
         for i in range(6):
             if out[i] is not None:
                 self.last_angles[i] = out[i]
+                self.last_read[i] = out[i]
         self.last_seen_t = time.time()
         return out
 
     def move_servos(self, angles, duration_ms=400, wait=True, check=True):
         """
-        Raw: sends angles, no read-back. Use _move_checked for servos 1-4.
-        check=False only for sub-steps on the way back INTO the safe range
-        from a pose past it (the end target itself is always checked).
+        Sends angles (through the gate), no read-back. Use _move_checked for
+        servos 1-4. check=False only for sub-steps on the way back INTO the
+        range from a pose past it (the gate still allows only that).
         """
         if check:
             for servo_id, angle in angles.items():
                 self._check(servo_id, angle)
+        self._gate(angles)
         for servo_id, angle in angles.items():
             self._write(servo_id, angle, duration_ms)
         if wait:
             time.sleep(duration_ms / 1000.0 + 0.05)
 
-    def _move_checked(self, angles, duration_ms, check=True):
+    def health_line(self):
+        """One line on how the motor loop has been doing (shown on quit and in the 3D view)."""
+        h = self.health
+        if not h["moves"]:
+            return "Motor loop: no moves yet"
+        return ("Motor loop: %d move%s at %.1f Hz (aim %.0f), %d late ticks skipped, "
+                "%d missed reads, %d commands refused"
+                % (h["moves"], "" if h["moves"] == 1 else "s", h["hz"] or 0.0,
+                   1.0 / config.CONTROL_DT, h["overruns"], h["read_misses"], h["refused"]))
+
+    def _start_watch(self, watch, sids, begin=None):
         """
-        Sends angles, waits, then reads servos 1-4 back. Any of them more than
-        STALL_DEG short of where it was sent = blocked: hold still right there
-        and raise ArmBlocked. Refuses to move at all while blocked.
+        Tell the stall watch where each joint sits relative to its command
+        before a move: a loaded joint sags a few degrees and stays about that
+        far off all move long. That's not "behind"; only what changes is.
+        """
+        sids = [sid for sid in sids if sid <= 4 and sid not in watch.offset]
+        if not sids:
+            return
+        if time.time() - self.last_seen_t > 0.3:
+            self._read_joints_once()
+        for sid in sids:
+            cmd = self.sent[sid - 1]
+            if cmd is None and begin is not None:
+                cmd = begin.get(sid)
+            if self.last_read[sid - 1] is not None and cmd is not None:
+                watch.start(sid, self.last_read[sid - 1] - cmd)
+
+    def _move_checked(self, angles, duration_ms, check=True, watch=None):
+        """
+        Sends angles, waits, then reads servos 1-4 back. A joint that stops
+        following (motion.StallWatch, shared across the steps of one plan) or
+        is more than SETTLE_DEG off on its own = blocked: hold still right
+        there and raise ArmBlocked. Refuses to move at all while blocked.
         """
         self._ensure_not_blocked()
         if self.stop_event.is_set():
             self._hold_still(self.read_angles(samples=1, ids=(1, 2, 3, 4)))
             raise ArmBlocked("you pressed STOP")
+        if watch is None:
+            watch = motion.StallWatch(lag_max=config.SETTLE_DEG)
+        self._start_watch(watch, angles)
         self.move_servos(angles, duration_ms=duration_ms, check=check)
         ids = [sid for sid in angles if sid <= 4]
         if not ids:
@@ -406,8 +549,8 @@ class Arm:
                 self._hold_still(got)
                 raise ArmBlocked("servo %d (%s) stopped answering during a move"
                                  % (sid, SERVO_NAMES[sid]))
-            short = abs(got[sid - 1] - angles[sid])
-            if short > config.STALL_DEG:
+            stalled, short = watch.update(sid, angles[sid], got[sid - 1])
+            if stalled:
                 self._hold_still(got)
                 raise ArmBlocked(
                     "servo %d (%s) stopped %.0f degrees short of where it was sent -- "
@@ -425,6 +568,7 @@ class Arm:
         for sid in (1, 2, 3, 4):
             if got[sid - 1] is not None:
                 self._write(sid, got[sid - 1], 300)
+        self._found_at(got)
         self.log("blocked", got=got[:4])
 
     def clear_block(self):
@@ -541,6 +685,7 @@ class Arm:
         self.is_limp = False
         self.powered = True
         self.log("stiffen", got=angles)
+        self._found_at(angles)
         # Every servo should now be exactly where it said it was. If one isn't,
         # its reading was wrong (it just moved to the wrong angle) or something
         # is pressing on the arm. Don't chase it: hold, and stop everything.
@@ -748,6 +893,7 @@ class Arm:
         self._ensure_not_blocked()
         prev = self.current_angles()[:4]
         duration_ms = duration_ms or config.STEP_MS
+        watch = motion.StallWatch(lag_max=config.STALL_LAG_MAX)
         for servos in plan:
             target = [servos[k] for k in range(1, 5)]
             if max(abs(target[i] - prev[i]) for i in range(4)) > config.CONTINUOUS_DEG:
@@ -757,7 +903,7 @@ class Arm:
                                      "the board near (%.0f, %.0f, %.0f)" % where)
                 self._run_stages(prev, [dict(servos)])
             else:
-                self._move_checked(servos, duration_ms)
+                self._move_checked(servos, duration_ms, watch=watch)
             prev = target
 
     def move_line(self, end, duration_ms=None):
@@ -853,57 +999,136 @@ class Arm:
             for sid, a in stage.items():
                 current[sid - 1] = a
 
+    def _read_joints_once(self):
+        """
+        Servos 1-4 for the control loop: one quick retry each, not read_servo's
+        three spaced 50 ms apart, which would blow the tick. None for one that
+        didn't answer.
+        """
+        out = [None] * 6
+        for sid in (1, 2, 3, 4):
+            for attempt in (1, 2):           # one immediate retry: an I2C hiccup is common
+                with self.bus_lock:
+                    value = self.bus.Arm_serial_servo_read(sid)
+                    if value is None:
+                        value = self._read_wide(sid)
+                if value is not None:
+                    out[sid - 1] = float(value)
+                    self.last_angles[sid - 1] = out[sid - 1]
+                    self.last_read[sid - 1] = out[sid - 1]
+                    break
+        self.last_seen_t = time.time()
+        return out
+
     def _stream(self, begin, end, others):
         """
-        One smooth joint move (see robot/motion.py): a target every
-        CONTROL_DT, sent with a little extra time so the servos keep moving,
-        each read back. A joint further behind its target than STALL_DEG plus
-        one step = something is in the way: hold still, ArmBlocked. At the
-        end, every joint must settle within STALL_DEG of where it was sent.
+        One smooth joint move (see robot/motion.py), run as a fixed-rate
+        control loop -- the way Microduck's robotd runs its 50 Hz loop:
+
+          * every CONTROL_DT the target is where the speed profile says the
+            joints should be at that moment (time, not tick count), sent with
+            a little extra time so the servos keep moving, then read back
+          * the schedule is kept: a late tick doesn't push every later one
+            back (a slow loop would otherwise run the move in slow motion),
+            and a tick that's very late is skipped, not made up for with a
+            burst of commands
+          * a read that gets no answer doesn't stop the arm by itself: the
+            move pauses (the next target is the same) and carries on when the
+            servo answers again; READ_MISS_LIMIT misses in a row = hold still
+          * a joint that stops following its commands (motion.StallWatch) =
+            something is in the way: hold still, ArmBlocked. At the end, every
+            joint must settle within SETTLE_DEG of where it was sent.
         """
         dt = config.CONTROL_DT
-        targets = motion.joint_targets(begin, end, dt)
+        biggest = max([abs(end[s] - begin[s]) for s in end] or [0.0])
+        total = motion.duration(biggest)
         ms = int(dt * 1000 * 1.5)
-        prev = dict(begin)
-        for k, target in enumerate(targets):
+        start = time.time()
+        paused = 0.0                 # trajectory time skipped while reads failed
+        deadline = start
+        misses = 0
+        ticks = 0
+        last_good = None
+        watch = motion.StallWatch()
+        self._start_watch(watch, end, begin)
+        self.health["moves"] += 1
+        while True:
             self._ensure_not_blocked()
             if self.stop_event.is_set():
                 self._hold_still(self.read_angles(samples=1, ids=(1, 2, 3, 4)))
                 raise ArmBlocked("you pressed STOP")
+            t = time.time() - start - paused
+            f = 1.0 if biggest < 1e-9 or t >= total else motion.position(t, biggest) / biggest
+            target = {s: begin[s] + (end[s] - begin[s]) * f for s in end}
             send = dict(target)
-            if k == len(targets) - 1:
+            if f >= 1.0:
                 send.update(others)
             self.move_servos(send, duration_ms=ms, wait=False, check=False)
-            time.sleep(dt)
-            got = self.read_angles(samples=1, ids=(1, 2, 3, 4))
+            # keep the schedule; skip ticks rather than burst after a slow one
+            deadline += dt
+            now = time.time()
+            if now > deadline + dt:
+                self.health["overruns"] += 1
+                deadline = now
+            time.sleep(max(0.0, deadline - now))
+            got = self._read_joints_once()
+            ticks += 1
+            self.health["ticks"] += 1
             self.log("move", sent=send, ms=ms, got=got[:4])
-            for sid in target:
-                if got[sid - 1] is None:
-                    self._hold_still(got)
+            silent = [sid for sid in target if got[sid - 1] is None]
+            if silent:
+                misses += 1
+                self.health["read_misses"] += 1
+                if misses >= config.READ_MISS_LIMIT:
+                    self._hold_still(last_good or got)
                     raise ArmBlocked("servo %d (%s) stopped answering during a move"
-                                     % (sid, SERVO_NAMES[sid]))
-                behind = abs(got[sid - 1] - target[sid])
-                if behind > config.STALL_DEG + abs(target[sid] - prev[sid]):
+                                     % (silent[0], SERVO_NAMES[silent[0]]))
+                paused += dt                 # hold this target until it answers again
+                continue
+            misses = 0
+            last_good = got
+            for sid in target:
+                stalled, behind = watch.update(sid, target[sid], got[sid - 1])
+                if stalled:
                     self._hold_still(got)
                     raise ArmBlocked(
                         "servo %d (%s) stopped %.0f degrees short of where it was sent -- "
                         "something is in the way, or the arm wasn't where I thought"
                         % (sid, SERVO_NAMES[sid], behind))
-            prev = target
-        # let it arrive, then make sure it did
-        for attempt in range(4):
-            got = self.read_angles(samples=1, ids=(1, 2, 3, 4))
-            short = max(abs(got[sid - 1] - end[sid]) if got[sid - 1] is not None else 999.0
-                        for sid in end)
-            if short <= config.STALL_DEG:
-                return
+            if f >= 1.0:
+                break
+        elapsed = time.time() - start
+        if ticks and elapsed > 0:
+            self.health["hz"] = round(ticks / elapsed, 1)
+            self.health["worst_tick_s"] = max(self.health["worst_tick_s"],
+                                              round(elapsed / ticks, 3))
+        # let it arrive, then make sure it did: within SETTLE_DEG, and either
+        # close (SETTLE_CLOSE_DEG) or no longer moving -- so the next move
+        # starts from a joint at rest, not one still catching up
+        got, prev, close_enough = None, None, False
+        for attempt in range(8):
+            got = self._read_joints_once()
+            known = [sid for sid in end if got[sid - 1] is not None]
+            if len(known) == len(end):
+                short = max(abs(got[sid - 1] - end[sid]) for sid in end)
+                close_enough = short <= config.SETTLE_DEG
+                still = prev is not None and all(
+                    prev[sid - 1] is not None
+                    and abs(got[sid - 1] - prev[sid - 1]) < config.SETTLE_STILL_DEG
+                    for sid in end)
+                if close_enough and (short <= config.SETTLE_CLOSE_DEG or still):
+                    return
+            prev = got
             time.sleep(dt)
+        if close_enough:
+            return
         self._hold_still(got)
         worst = max(end, key=lambda sid: 999.0 if got[sid - 1] is None
                     else abs(got[sid - 1] - end[sid]))
+        behind = 999.0 if got[worst - 1] is None else abs(got[worst - 1] - end[worst])
         raise ArmBlocked("servo %d (%s) stopped %.0f degrees short of where it was sent -- "
                          "something is in the way, or the arm wasn't where I thought"
-                         % (worst, SERVO_NAMES[worst], short))
+                         % (worst, SERVO_NAMES[worst], behind))
 
     def ready(self):
         """Joint move to a pose that straight-line planning can start from."""

@@ -33,6 +33,7 @@ TMP = tempfile.mkdtemp()
 # every file this test writes goes to a temp folder -- set BEFORE importing
 # modules whose defaults read these paths
 config.LOGS_DIR = os.path.join(TMP, "logs")
+config.LOCK_FILE = os.path.join(TMP, "arm.lock")
 config.DATA_DIR = os.path.join(TMP, "data")
 config.CALIBRATION_DIR = os.path.join(TMP, "calibration")
 config.BOARD_FILE = os.path.join(config.CALIBRATION_DIR, "board_arm.json")
@@ -385,29 +386,33 @@ check("far past the scale = no answer", a.read_angles(samples=1)[3] is None)
 # =====================================================================
 print("\n--- 7b. every command in every motion log was a small step ---")
 import json                                                   # noqa: E402
-biggest, where = 0.0, ""
+biggest, where, lag = 0.0, "", 0.0
 folder = os.path.join(config.LOGS_DIR, "motion")
 for name in sorted(os.listdir(folder)):
-    last_got = None
+    last_sent, last_got = {}, None
     with open(os.path.join(folder, name)) as fh:
         for line in fh:
             event = json.loads(line)
             if event.get("event") in ("limp", "stiffen", "blocked", "unblocked"):
-                last_got = None
+                last_sent, last_got = {}, None
                 continue
             if event.get("event") != "move" or "got" not in event:
                 continue
-            if last_got is not None:
-                for sid, angle in event["sent"].items():
-                    sid = int(sid)
-                    if sid <= 4 and last_got[sid - 1] is not None:
-                        jump = abs(angle - last_got[sid - 1])
-                        if jump > biggest:
-                            biggest, where = jump, "%s servo %d" % (name, sid)
+            for sid, angle in event["sent"].items():
+                sid = int(sid)
+                if sid > 4:
+                    continue
+                if sid in last_sent and abs(angle - last_sent[sid]) > biggest:
+                    biggest, where = abs(angle - last_sent[sid]), "%s servo %d" % (name, sid)
+                if last_got is not None and last_got[sid - 1] is not None:
+                    lag = max(lag, abs(angle - last_got[sid - 1]))
+                last_sent[sid] = angle
             last_got = event["got"]
-check("no command asked a joint to turn more than %.0f deg at once"
-      % (config.CONTINUOUS_DEG + 1), biggest <= config.CONTINUOUS_DEG + 1,
+check("no command moved a joint more than %.0f deg from the one before"
+      % config.CONTINUOUS_DEG, biggest <= config.CONTINUOUS_DEG + 0.01,
       "biggest %.1f deg (%s)" % (biggest, where))
+check("and none was further than the gate allows from where the joint really was",
+      lag <= config.GATE_STEP_DEG, "worst %.1f deg" % lag)
 
 # =====================================================================
 print("\n--- 8. coloured map: plain text when colours are off ---")

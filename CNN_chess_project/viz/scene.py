@@ -64,7 +64,8 @@ def arm_state(arm):
         margin = {"mm": round(m + config.HARD_CLEAR_MM, 1), "link": link, "obstacle": ob}
     return {"angles": angles, "tip": tip, "margin": margin, "powered": arm.powered,
             "limp": arm.is_limp, "blocked": arm.blocked, "seen": arm.last_seen_t,
-            "plan": arm.last_plan, "home": list(arm.home_pose)}
+            "plan": arm.last_plan, "home": list(arm.home_pose),
+            "health": dict(getattr(arm, "health", {}) or {})}
 
 
 def build(zone, frame=None, arm=None, results=None, extra=None):

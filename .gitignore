@@ -8,3 +8,4 @@ CNN_chess_project/data/
 CNN_chess_project/logs/
 CNN_chess_project/sim/
 CNN_chess_project/arm_view.html
+CNN_chess_project/dofbot_chess.urdf

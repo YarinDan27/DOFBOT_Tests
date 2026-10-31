@@ -122,7 +122,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
       <button class="btn" id="v-side" type="button">Side</button>
       <button class="btn" id="v-top" type="button">Top</button>
     </div>
-    <div class="hud"><span class="chip" id="room"><span class="dot"></span><span id="room-text">-</span></span></div>
+    <div class="hud"><span class="chip" id="room"><span class="dot"></span><span id="room-text">-</span></span><span class="chip" id="loop" hidden><span class="dot"></span><span id="loop-text">-</span></span></div>
   </main>
 
   <aside class="panel">
@@ -562,6 +562,20 @@ const DATA = /*SCENE_DATA*/null;
   }
   document.getElementById("follow").addEventListener("click", () => setFollow(!follow));
 
+  // how the motor loop is doing (robot/arm.py health): rate, late ticks, missed reads
+  function showHealth(h) {
+    const chip = document.getElementById("loop");
+    if (!h || !h.moves) { chip.hidden = true; return; }
+    chip.hidden = false;
+    const bad = h.refused > 0, warn = h.overruns > 0 || h.read_misses > 0;
+    chip.className = "chip " + (bad ? "bad" : warn ? "warn" : "ok");
+    document.getElementById("loop-text").textContent =
+      "Motor loop " + (h.hz || 0).toFixed(1) + " Hz" +
+      (h.overruns ? " · " + h.overruns + " late" : "") +
+      (h.read_misses ? " · " + h.read_misses + " missed reads" : "") +
+      (h.refused ? " · " + h.refused + " refused" : "");
+  }
+
   let lastKey = "";
   async function poll() {
     try {
@@ -581,6 +595,7 @@ const DATA = /*SCENE_DATA*/null;
           "Live from the arm" + (S.arm.blocked ? " · STOPPED" : S.arm.limp ? " · power off" : "") +
           (age > 5 ? " · last seen " + Math.round(age) + " s ago" : "");
       } else if (first) { render(); }
+      showHealth(S.arm && S.arm.health);
     } catch (e) {
       document.getElementById("mode-text").textContent = "Can't reach the arm program";
       document.getElementById("mode").className = "chip mode bad";

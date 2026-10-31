@@ -52,6 +52,7 @@ if SIM:
     config.BOARD_FILE = os.path.join(config.CALIBRATION_DIR, "board_arm.json")
     config.LOOK_POSE_FILE = os.path.join(config.CALIBRATION_DIR, "look_pose.json")
     config.ELECTRONICS_FILE = os.path.join(config.CALIBRATION_DIR, "electronics.json")
+    config.LOCK_FILE = os.path.join(config.ROOT, "sim", "arm.lock")
     if not os.path.isdir(config.CALIBRATION_DIR) and os.path.isdir(_real_calibration):
         shutil.copytree(_real_calibration, config.CALIBRATION_DIR)
 
@@ -634,6 +635,7 @@ def main():
              "jog_taught": {}}
     if SIM:
         import Arm_Lib
+        Arm_Lib.use_servo_model()        # servos that take time, sag and play, like real ones
         Arm_Lib.reset(config.POSE_REST)
     try:
         arm = Arm()
@@ -692,6 +694,7 @@ def main():
             elif choice == "q":
                 break
 
+        print(arm.health_line())
     if state["camera"] is not None:
         state["camera"].stop()
     if state.get("view"):

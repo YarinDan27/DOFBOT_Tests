@@ -27,10 +27,15 @@ from robot import arm as arm_mod                              # noqa: E402
 from robot import kinematics                                  # noqa: E402
 
 assert "fakes" in Arm_Lib.__file__, "refusing to run against the real arm"
-time.sleep = lambda s: None
+# a pretend clock: sleeping moves it on instantly, so moves take no real time
+CLOCK = [1000.0]
+REAL_SLEEP, REAL_TIME = time.sleep, time.time
+time.time = lambda: CLOCK[0]
+time.sleep = lambda s: CLOCK.__setitem__(0, CLOCK[0] + max(0.0, float(s)))
 random.seed(11)
 TMP = tempfile.mkdtemp()
 config.LOGS_DIR = TMP
+config.LOCK_FILE = os.path.join(TMP, "arm.lock")
 
 failures = []
 ANSWERS = []
@@ -226,7 +231,7 @@ with open(fake_copy, "w") as fh:
 copy = subprocess.Popen([sys.executable, fake_copy], cwd=config.ROOT)   # ... run from here
 shell = subprocess.Popen(["sh", "-c", "sleep 30 # python3 run.py arm.launch"],
                          cwd=config.ROOT)              # only mentions them: not a program
-time.sleep = __import__("time").sleep
+time.sleep, time.time = REAL_SLEEP, REAL_TIME
 __import__("time").sleep(0.5)
 found = arm_mod.other_arm_programs()
 ros.kill()
