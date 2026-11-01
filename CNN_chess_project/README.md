@@ -15,7 +15,7 @@ python3 -m viz.export     # writes arm_view.html: the 3D view of your calibratio
 python3 -m viz.urdf       # writes dofbot_chess.urdf: the same arm model, for RViz or MuJoCo
 ```
 
-**v2.6.0.** The banner shows the version and what was last fixed. No questions at start-up. It stops Yahboom's ROS arm driver if it's running, which may ask for your password. Power comes on right where the arm is. It says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: resting, folded back over the electronics, or the home pose you taught.
+**v2.6.1.** The banner shows the version and what was last fixed. No questions at start-up. It stops Yahboom's ROS arm driver if it's running, which may ask for your password. Power comes on right where the arm is. It says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: resting, folded back over the electronics, or the home pose you taught.
 
 **Live 3D view:** while it runs, open the address it prints (`http://<jetson>:8081`) in a browser on your laptop. You see the arm as the program sees it, with its pose, the move it's making, the board, the electronics box, and every part's distance to them. A **motor loop** chip shows the loop rate and any late ticks, missed reads or refused commands. The same line is printed when you quit.
 
@@ -30,20 +30,18 @@ python3 -m viz.urdf       # writes dofbot_chess.urdf: the same arm model, for RV
 | 7 Teach the home pose | Hands-free: hold the arm where it should wait, still for 3 s |
 | 8 Measure the electronics | Hands-free: touch the closed claw on the top of the black box at three corners |
 | 0 Rest and quit | Folds back to rest, then quits (**q** quits leaving it where it is) |
-| c Carry on | Only shown after a stopped move, once you've looked at the arm |
 
-### Teaching the board, hands-free
+### Teaching the board (2.6.1: no countdown)
 
-Put a **pawn** on each square to teach (default b3 g3 b6 g6 e5). Choose 1 and press Enter. The arm closes its claw and comes down low over the board. Then walk over:
+Put a **pawn** on each square to teach (default b3 g3 b6 g6 e5). Choose 1 and press Enter. The arm doesn't move. Walk over:
 
-1. **Countdown:** beeps for the last 5 s, then a **long beep**. Power is off, so be holding the arm by then.
-2. For each square in order, put the **closed claw tip on top of the pawn**, with the claw pointing down or tilted a little, and **hold still 2 s**. Beeps = how many squares are done (1, 2, 3…).
-3. Light: **blue** = waiting, **red** = a joint can't report (tilt the claw a bit more), **green** = recorded.
-4. After the last square: a **long beep**. Power is back on and the arm holds itself. Let go.
+1. **Push the arm a little.** It lets go: power off, one long beep.
+2. Put the **closed claw tip on top of each pawn**, in order, and **hold still 2 s**. Beeps = how many are done.
+3. **Long beep** at the end: it holds itself again. Let go.
 
-To stop early, lift the claw up high and hold still 4 s (two beeps). If it can't switch power back on, you get 3 beeps and a red light. If all touches agree, it saves by itself. If one is off, the computer asks you to redo just that one. Grabbing goes 15 mm below the taught pawn tops (`GRAB_BELOW_TOP_MM`).
+Light: blue = waiting, green = recorded, red = a joint is past what it can report (bend it back a little). To stop early, lift the claw high and hold still 4 s. If all touches agree, it saves by itself.
 
-The same flow (countdown, hold still, beeps) teaches the home pose (7) and measures the electronics (8).
+The home pose (7) and the electronics (8) work the same way: push, move, hold still.
 
 ## Safety: the arm's real shape (v2.5)
 
@@ -57,10 +55,10 @@ Now there are no per-servo safety limits, only what each servo can physically do
 - **The electronics box is an estimate** from the product photo and your poses (`config.ELECTRONICS`). Measure it with menu 8. Teaching a home pose by hand also lowers the box if you held the arm somewhere the estimate said was taken, because you held it there, so there's room.
 - **Every move is simulated before it runs** (`robot/safety.py`): every 2°, the whole arm against everything. If moving all joints at once isn't safe, it tries one joint at a time in every order, then going via upright, ready or shoulder-first. As a last resort it searches joint space (RRT-connect, `SEARCH_TIME_S`).
 - **Straight lines** (going down to pieces) keep every pose clear too, and never flip the elbow halfway (2.4.2).
-- **Smooth motion** (`robot/motion.py`, `SMOOTH_MOTION`): joints move together on a speed profile (40°/s, gentle start and stop). A new target goes out every 0.1 s and every one is **read back**. If a joint stops following while its commands keep going, something is in the way: it **stops and holds still** until you choose c (2.6, below). Set `SMOOTH_MOTION = False` to go back to the 2.4 start-stop sub-steps.
-- **Readings past the scale** (2.4.3): Yahboom's `Arm_serial_servo_read` says nothing outside 0–180°, so the program reads the same register itself, up to 20° past. It never uses `Arm_serial_servo_read_any`, which forgets that servos 2–4 are flipped: a wrist at −6° came back as 186°, the likely cause of the 24 Oct crash.
+- **Smooth motion** (`robot/motion.py`, `SMOOTH_MOTION`): joints move together on a speed profile (40°/s, gentle start and stop). A new target goes out every 0.1 s and every one is **read back**. If a joint stops following while its commands keep going, something is in the way: it **stops and holds still** there, and moves again when you choose something (2.6.1). Set `SMOOTH_MOTION = False` to go back to the 2.4 start-stop sub-steps.
+- **Readings past the scale** (2.4.3): Yahboom's `Arm_serial_servo_read` says nothing outside 0–180°, so the program reads the same register itself, up to 60° past (2.6.1: the elbow and wrist really go there). It never uses `Arm_serial_servo_read_any`, which forgets that servos 2–4 are flipped: a wrist at −6° came back as 186°, the likely cause of the 24 Oct crash.
 - **Impossible readings** (part of the arm under the table or deep inside the electronics) mean a servo is misreporting: it won't move.
-- **Power comes on aimed at where the arm already is.** A joint that can't report means a countdown, power off so you can move it, then power on by itself (long beep).
+- **Power comes on aimed at where the arm already is.** A joint that can't report: push the arm, it lets go, move that joint back a little, and it powers on by itself (long beep).
 - **Only one program drives the arm.** It stops Yahboom's ROS driver and other copies of itself at start, and (2.6) holds a lock while it runs.
 - **Ctrl-C never moves the arm.** q quits without moving; 0 rests first.
 - Every command and read-back is in `logs/motion/`, and everything printed is in `logs/session/`. Send me the newest file if something goes wrong.
@@ -72,7 +70,7 @@ Pollen Robotics' Microduck (shown at NVIDIA GTC Berlin) publishes all its robot 
 - **One safety gate.** Every command, from any part of the program, is checked just before it's sent. It refuses angles that aren't numbers, angles past the servo's range, jumps of more than 15° in one command, and poses closer to the electronics, base or table than where the arm was found. A refused command sends nothing.
 - **A loop that keeps time.** Targets follow the clock, not a tick count, so slow I²C reads don't make moves run in slow motion. A late tick is skipped, never made up with a burst.
 - **Missed reads pause the move** for a tick. Only 3 in a row stop it, and then it names the servo.
-- **Better stall detection.** A slow or loaded servo lags and sags but keeps moving. A blocked one stops while its commands go on, and that's what stops the arm now. The few degrees a joint already sagged before the move don't count. Between moves it waits for the joints to come to rest (`SETTLE_CLOSE_DEG`, `SETTLE_STILL_DEG`).
+- **Better stall detection.** A slow or loaded servo lags and sags but keeps moving. A blocked one stops while its commands go on, and that's what stops the arm now. The few degrees a joint already sagged before the move don't count. A servo answers a little late, so "on track" means near any of the last 3 commands. Between moves it waits for the joints to stop moving (`SETTLE_STILL_DEG`). 2.6.1 also lets the simulated servos answer up to 0.2 s late, and still has no false stops.
 - **One program on the arm** (`LOCK_FILE`). A second copy says who has it and doesn't touch the bus.
 - **Servos that behave like servos in `--sim`** (`tests/fakes/servo_model.py`): command delay, top speed, gear play, sag under load, noisy whole-degree readings and missed reads. `tests/test_motion.py` runs a full tour against 12 random servo sets and the worst case. That's Microduck's "domain randomisation": if it works for all of them, it doesn't depend on one lucky guess about our servos.
 - **The arm model as a URDF** (`python3 -m viz.urdf`), checked pose by pose against the model the safety checks use (`tests/test_urdf.py`). It's for RViz or MuJoCo later, and hasn't been tried in RViz yet. `urdf.joint_values(angles)` turns servo angles into the joint values RViz expects.

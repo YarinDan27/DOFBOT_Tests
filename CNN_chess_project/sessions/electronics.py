@@ -17,7 +17,6 @@ still 2 s at each (beeps = how many are done):
 Long beep = done, power back on. Saved to calibration/electronics.json; the
 3D view shows the new box.
 """
-import config
 from robot import world
 from sessions import teach
 
@@ -33,15 +32,13 @@ def box_from(points):
 
 
 def run(arm):
-    print("\n--- Measure the electronics box (hands-free at the arm) ---")
-    print("At the arm:")
-    print("  * wait for the LONG beep -- be holding the arm by then (power goes off)")
-    print("  * touch the CLOSED claw tip on the TOP of the black electronics box, at:")
-    for i, name in enumerate(CORNERS, start=1):
-        print("      %d. the %s" % (i, name))
-    print("    holding still 2 s at each (beeps = how many are done)")
-    print("  * long beep at the end = power is back on, you can let go")
-    teach.countdown(arm, config.TEACH_COUNTDOWN_S)
+    print("\n--- Measure the electronics box ---")
+    print("  1. Push the arm a little -- it lets go (long beep).")
+    print("  2. Claw tip on the TOP of the black box, hold still 2 s at: %s."
+          % ", then ".join(CORNERS))
+    print("  3. Long beep at the end = it holds itself again.")
+    if not teach.release(arm):
+        return None
     taught, how = teach.collect(arm, CORNERS)
     teach._finish_at_arm(arm, how)
     if len(taught) < len(CORNERS):

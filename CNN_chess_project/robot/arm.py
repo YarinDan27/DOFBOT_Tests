@@ -905,6 +905,9 @@ class Arm:
             else:
                 self._move_checked(servos, duration_ms, watch=watch)
             prev = target
+        # the end of the line: it must really get there (a small step at a
+        # time can fall behind slowly without ever looking stuck)
+        self._settle({k: plan[-1][k] for k in (1, 2, 3, 4)})
 
     def move_line(self, end, duration_ms=None):
         """Straight line from wherever we are to `end`. Checked before it moves."""
@@ -1102,9 +1105,16 @@ class Arm:
             self.health["hz"] = round(ticks / elapsed, 1)
             self.health["worst_tick_s"] = max(self.health["worst_tick_s"],
                                               round(elapsed / ticks, 3))
-        # let it arrive, then make sure it did: within SETTLE_DEG, and either
-        # close (SETTLE_CLOSE_DEG) or no longer moving -- so the next move
-        # starts from a joint at rest, not one still catching up
+        self._settle(end)
+
+    def _settle(self, end):
+        """
+        Let a move arrive, then make sure it did: every joint in `end`
+        within SETTLE_DEG and no longer moving -- so the next move starts
+        from a joint at rest, not one still catching up (a servo can carry on
+        for a moment after its last command). Not there = blocked.
+        """
+        dt = config.CONTROL_DT
         got, prev, close_enough = None, None, False
         for attempt in range(8):
             got = self._read_joints_once()
@@ -1116,7 +1126,7 @@ class Arm:
                     prev[sid - 1] is not None
                     and abs(got[sid - 1] - prev[sid - 1]) < config.SETTLE_STILL_DEG
                     for sid in end)
-                if close_enough and (short <= config.SETTLE_CLOSE_DEG or still):
+                if close_enough and still:
                     return
             prev = got
             time.sleep(dt)

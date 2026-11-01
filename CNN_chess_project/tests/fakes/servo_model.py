@@ -28,7 +28,7 @@ import config
 # typical values for the DOFBOT's 15 kg bus servos (not measured: ranges below)
 DEFAULTS = {"delay_s": 0.015, "max_speed": 250.0, "backlash": 1.0, "sag": 1.5,
             "noise": 0.3, "miss_rate": 0.0}
-RANGES = {"delay_s": (0.005, 0.05), "max_speed": (90.0, 400.0), "backlash": (0.0, 2.0),
+RANGES = {"delay_s": (0.005, 0.2), "max_speed": (90.0, 400.0), "backlash": (0.0, 2.0),
           "sag": (0.0, 4.0), "noise": (0.0, 0.6), "miss_rate": (0.0, 0.03)}
 SAG_SHARE = {2: 1.0, 3: 0.6, 4: 0.25}     # how much of the droop each joint gets
 
@@ -47,23 +47,37 @@ class ServoModel:
         self.cmd = {}
 
     def command(self, sid, start_angle, target, duration_ms, now):
-        speed_time = abs(target - start_angle) / self.p["max_speed"]
-        self.cmd[sid] = {"t0": now + self.p["delay_s"], "a0": start_angle, "a1": float(target),
-                         "dur": max(duration_ms / 1000.0, speed_time)}
+        """
+        A new target arrives delay_s from now. Until then the servo carries on
+        with the command it already has (it doesn't freeze), so the new move
+        starts from wherever that one has got to by then.
+        """
+        t0 = now + self.p["delay_s"]
+        old = self.cmd.get(sid)
+        if old is not None:
+            old = dict(old, prev=None)
+        a0 = self._along(old, start_angle, t0)
+        speed_time = abs(target - a0) / self.p["max_speed"]
+        self.cmd[sid] = {"t0": t0, "a0": a0, "a1": float(target),
+                         "dur": max(duration_ms / 1000.0, speed_time), "prev": old}
 
-    def motor(self, sid, fallback, now):
-        """Where the servo's motor is now (before gear play and sag)."""
-        c = self.cmd.get(sid)
+    @staticmethod
+    def _along(c, fallback, now):
         if c is None:
             return fallback
         if now <= c["t0"]:
-            return c["a0"]
+            return ServoModel._along(c.get("prev"), c["a0"], now)
         f = 1.0 if c["dur"] <= 0 else min(1.0, (now - c["t0"]) / c["dur"])
         return c["a0"] + (c["a1"] - c["a0"]) * f
 
+    def motor(self, sid, fallback, now):
+        """Where the servo's motor is now (before gear play and sag)."""
+        return self._along(self.cmd.get(sid), fallback, now)
+
     def hold(self, sid, angle):
         """The joint was put here (by hand, or at start): the motor stays here until told."""
-        self.cmd[sid] = {"t0": float("-inf"), "a0": float(angle), "a1": float(angle), "dur": 0.0}
+        self.cmd[sid] = {"t0": float("-inf"), "a0": float(angle), "a1": float(angle), "dur": 0.0,
+                         "prev": None}
 
     def known(self, sid):
         return sid in self.cmd

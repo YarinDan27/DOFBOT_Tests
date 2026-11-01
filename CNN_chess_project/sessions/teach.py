@@ -1,42 +1,34 @@
 #!/usr/bin/env python3
 """
-Teach the board by hand -- hands-free at the arm.
+Teach the board by hand -- hands-free at the arm, no countdown:
 
-You start it at the computer, walk over, and teach with the arm alone:
+  1. Push the arm a little: it lets go (power off, long beep).
+  2. Put the closed claw tip on top of each pawn, in the order shown, and
+     hold still 2 s. Beeps = how many squares are done.
+  3. After the last one: long beep, power back on, the arm holds itself.
 
-  1. The claw closes and the arm moves low over the board.
-  2. Countdown: beeps every second for the last 5 s, then a LONG beep: power
-     is off and the arm is floppy -- be holding it by then.
-  3. For each square, in the order shown: put the CLOSED claw tip on top of
-     the piece and HOLD STILL for 2 s. It records by itself:
-     1 beep = first square recorded, 2 beeps = second, and so on.
-  4. After the last square: a long beep -- power is back on and the arm holds
-     itself. You can let go.
+Light: blue = waiting, green = recorded, red = a joint can't report (more
+than config.WIDE_READ_DEG past its 0-180 scale: bend it back a little).
+To stop early: lift the claw up high and hold still 4 s (two beeps).
 
-The arm's light while teaching:
-  blue  = waiting for you      red = a joint can't report its angle: tilt the
-  green = just recorded              claw a little until it turns blue
-
-To stop early: lift the claw up high and hold still for 4 s. It switches
-power back on right there (two beeps) and keeps what you've taught so far.
-
-A joint bent more than config.WIDE_READ_DEG past the end of its servo's
-0-180 scale can't report (red light) -- tilting the claw a little fixes it.
-Only the claw tip's position is used.
-
-Teach 4 or more squares and it checks your work: a touch that disagrees with
-the others by more than config.TEACH_MAX_RESIDUAL_MM is flagged, and you redo
-just that one.
+The arm doesn't move first, and nothing counts down: it only lets go once
+you're holding it. Only the claw tip's position is used: the board's
+squares come from forward kinematics of the servo readings, fitted by
+robot/board_frame.py. Touches that disagree by more than
+config.TEACH_MAX_RESIDUAL_MM are flagged, and you redo just that one.
 """
+import io
 import json
 import math
 import os
+import select
 import shutil
+import sys
 import time
 
 import config
 from robot import kinematics
-from robot.arm import ArmBlocked, FIX_BY_HAND, OutOfReach, SERVO_NAMES, UnsafeMove
+from robot.arm import ArmBlocked, FIX_BY_HAND, SERVO_NAMES
 from robot.board_frame import BoardFrame, is_square
 
 BLUE = (0, 0, 80)
@@ -68,16 +60,10 @@ def _ask_squares():
 
 
 def _guide(squares):
-    print("\nAt the arm:")
-    print("  * wait for the LONG beep -- be holding the arm by then (power goes off)")
-    print("  * then, in this order: %s" % "  ".join(s.upper() for s in squares))
-    print("    (a pawn on each of them -- the same kind of piece everywhere)")
-    print("    put the CLOSED claw tip on top of the pawn, claw tilted a little, and")
-    print("    HOLD STILL 2 s. Beeps = which square was recorded (1, 2, 3...).")
-    print("  * red light = tilt the claw a little more; blue = waiting; green = got it")
-    print("  * to stop early: lift the claw up high and hold still 4 s (two beeps)")
-    print("  * long beep at the end = power is back on, you can let go")
-    print("    (3 beeps + red light = it couldn't: lay the arm down gently)")
+    print("\n  Teach %s:" % " ".join(s.upper() for s in squares))
+    print("  1. Push the arm a little -- it lets go (long beep).")
+    print("  2. Claw tip on top of each pawn, in that order, hold still 2 s (beeps = how many).")
+    print("  3. Long beep at the end = it holds itself again.")
 
 
 class _Stillness:
@@ -147,42 +133,60 @@ def _end_line(state):
         state["width"] = 0
 
 
-def countdown(arm, seconds):
-    """Gives you time to walk to the arm, then switches its power off."""
-    seconds = int(seconds)
-    screen = {}
-    print()
-    for left in range(seconds, 0, -1):
-        _show("  Power goes OFF in %d s -- go and hold the arm. (Ctrl-C = cancel)" % left,
-              screen)
-        if left <= 5:
-            arm.beep(1)
-            time.sleep(max(0.0, 1.0 - 0.3))
-        else:
-            time.sleep(1.0)
-    _show("  Power OFF -- the arm is floppy now.", screen)
-    _end_line(screen)
+def _enter_pressed():
+    """True if Enter was pressed at the keyboard (never waits for it)."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+        ready = select.select([sys.stdin], [], [], 0)[0]
+    except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+        return False
+    if ready:
+        sys.stdin.readline()
+        return True
+    return False
+
+
+def release(arm, timeout=None):
+    """
+    Lets go of the arm once you're holding it -- no countdown. Push it a
+    little (any joint config.PUSH_DEG off where it's holding, or a joint that
+    couldn't report starts to) and the power goes off with a long beep.
+    Enter at the keyboard does it too. Returns True once it's floppy; False
+    if nobody came within RELEASE_WAIT_S (nothing changed) or Ctrl-C.
+    """
+    if arm.is_limp:
+        return True
+    timeout = config.RELEASE_WAIT_S if timeout is None else timeout
+    light = _Light(arm)
+    light.set(BLUE)
+    print("  Waiting for your push (or press Enter here if you're already holding it).")
+    base, pushed = None, 0
+    end = time.time() + timeout
+    try:
+        while True:
+            if time.time() > end:
+                light.set(OFF)
+                print("  Nobody pushed it -- nothing changed.")
+                return False
+            got = arm.read_angles(samples=1, ids=(1, 2, 3, 4))[:4]
+            if base is None:
+                base = list(got)
+            moved = any((b is None) != (g is None)
+                        or (b is not None and abs(g - b) >= config.PUSH_DEG)
+                        for b, g in zip(base, got))
+            pushed = pushed + 1 if moved else 0
+            if pushed >= 2 or _enter_pressed():
+                break
+            time.sleep(config.TEACH_TICK_S)
+    except KeyboardInterrupt:
+        light.set(OFF)
+        print("\n  Cancelled -- nothing changed.")
+        return False
     arm.limp()
     arm.beep(long=True)
-
-
-def _move_low_over_board(arm, frame):
-    """Before power goes off: close the claw and come down low, so it can't fall far."""
-    try:
-        arm.set_servo(6, config.CLAW_MAX, 500)
-        time.sleep(0.5)
-    except Exception:
-        pass
-    if frame is not None:
-        x, y, z = frame.square_xyz(config.TEACH_START_SQUARE)
-        target = (x, y, z + config.TEACH_START_ABOVE_MM)
-    else:
-        target = config.TEACH_START_XYZ
-    try:
-        arm.lift_clear()
-        arm.goto(*target)
-    except (OutOfReach, UnsafeMove, ArmBlocked, RuntimeError) as e:
-        print("  (couldn't move low over the board first: %s -- staying here)" % e)
+    print("  Power OFF -- it's in your hands.")
+    return True
 
 
 def _record(arm, camera, square, photo_dir):
@@ -237,12 +241,17 @@ def collect(arm, squares, camera=None, photo_dir=None):
                 last_motion = now
             if tip[2] > config.AUTO_MAX_Z_MM:
                 light.set(BLUE)
-                _show("  [%d/%d] claw is up high -- hold still %.0f s here to stop "
-                      "teaching (%.1f s)" % (i + 1, len(squares), config.PAUSE_HOLD_S, held),
-                      screen)
-                if held >= config.PAUSE_HOLD_S:
-                    _end_line(screen)
-                    return taught, "paused"
+                if not taught:
+                    # where you picked it up: nothing to stop yet
+                    _show("  [%d/%d] bring the claw down onto %s" % (
+                        i + 1, len(squares), square.upper()), screen)
+                else:
+                    _show("  [%d/%d] claw is up high -- hold still %.0f s here to stop "
+                          "teaching (%.1f s)" % (i + 1, len(squares), config.PAUSE_HOLD_S,
+                                                 held), screen)
+                    if held >= config.PAUSE_HOLD_S:
+                        _end_line(screen)
+                        return taught, "paused"
             elif last_tip is not None and _distance(tip, last_tip) < config.AUTO_MIN_MOVE_MM:
                 light.set(BLUE)
                 _show("  [%d/%d] move the claw on to %s" % (i + 1, len(squares),
@@ -338,11 +347,10 @@ def _save_session(photo_dir, session, taught, frame):
 
 
 def _teach_at_arm(arm, squares, camera, photo_dir, frame):
-    """One trip to the arm: move low, countdown, record hands-free, power back on."""
+    """One trip to the arm: it lets go when you push it, you teach, it holds itself again."""
     _guide(squares)
-    if not arm.is_limp:
-        _move_low_over_board(arm, frame)
-    countdown(arm, config.TEACH_COUNTDOWN_S)
+    if not release(arm):
+        return {}
     taught, how = collect(arm, squares, camera, photo_dir)
     _finish_at_arm(arm, how)
     return taught
@@ -350,7 +358,7 @@ def _teach_at_arm(arm, squares, camera, photo_dir, frame):
 
 def run(arm, camera=None, frame=None):
     """Teach the board. Returns the new BoardFrame, or None if nothing was saved."""
-    print("\n--- Teach the board by hand (hands-free at the arm) ---")
+    print("\n--- Teach the board ---")
     squares = None
     while squares is None:
         squares = _ask_squares()
@@ -373,18 +381,21 @@ def run(arm, camera=None, frame=None):
         missing = [s for s in squares if s not in taught]
         if new is not None and not bad and not missing:
             break                      # all taught and they agree: save, no questions
-        options = ["Enter = save" if new is not None else None,
-                   "a square = teach/redo just that one",
-                   "c = carry on with %s" % " ".join(s.upper() for s in missing) if missing else None,
-                   "q = quit without saving"]
-        choice = input("\n" + "   ".join(o for o in options if o) + ": ").strip().lower()
-        if choice == "" and new is not None:
+        if missing:
+            options = ["Enter = carry on with %s" % " ".join(s.upper() for s in missing),
+                       "s = save these" if new is not None else None]
+        else:
+            options = ["Enter = save"]
+        options += ["%s = redo that square" % (bad[0] if bad else squares[0]),
+                    "q = quit without saving"]
+        choice = input("\n  " + "   ".join(o for o in options if o) + ": ").strip().lower()
+        if new is not None and (choice == "s" or (choice == "" and not missing)):
             break
         if choice == "q":
             new = None
             break
         again = None
-        if choice == "c" and missing:
+        if choice in ("", "c") and missing:
             again = missing
         elif is_square(choice):
             again = [choice]

@@ -97,9 +97,10 @@ class StallWatch(object):
     randomised servo tests found it.
     """
 
-    WINDOW = 2
-    MIN_CMD = 3.0
-    FOLLOW = 0.25
+    WINDOW = 4                   # reads (0.4 s): a real servo can take 0.2 s to get going
+    LAG_TICKS = 3                # it may be answering any of the last 3 commands (0.3 s)
+    MIN_CMD = 4.0
+    FOLLOW = 0.15
 
     def __init__(self, stall_deg=None, lag_max=None):
         self.stall_deg = config.STALL_DEG if stall_deg is None else stall_deg
@@ -111,22 +112,31 @@ class StallWatch(object):
         """
         The joint sat `offset` degrees off its command when the move began
         (sag and gear play under its own weight). Only lag beyond that counts
-        -- up to STALL_DEG of it: a joint further off than that wasn't where
-        it was thought to be, and the rest still counts.
+        -- up to config.SAG_MAX_DEG of it: more than that isn't sag, it's a
+        joint still catching up (or not where it was thought to be).
         """
-        self.offset[sid] = max(-self.stall_deg, min(self.stall_deg, float(offset)))
+        cap = config.SAG_MAX_DEG
+        self.offset[sid] = max(-cap, min(cap, float(offset)))
 
     def update(self, sid, target, got):
-        """Returns (stalled, degrees behind)."""
-        behind = abs(got - target - self.offset.get(sid, 0.0))
+        """
+        Returns (stalled, degrees behind the latest command). A real servo
+        answers a command a moment late, so "on track" means close to any of
+        the last LAG_TICKS commands, not just the newest one -- otherwise a
+        joint turning round (still finishing the last move while the next
+        one has started back the other way) looks stuck.
+        """
+        off = self.offset.get(sid, 0.0)
+        behind_now = abs(got - target - off)
         h = self.hist.setdefault(sid, [])
         h.append((float(target), float(got)))
         del h[:-(self.WINDOW + 1)]
-        if behind > self.lag_max:
-            return True, behind
+        if behind_now > self.lag_max:
+            return True, behind_now
+        behind = min(abs(got - t - off) for t, _ in h[-(self.LAG_TICKS + 1):])
         if len(h) > self.WINDOW and behind > self.stall_deg:
             dc = h[-1][0] - h[0][0]
             dg = h[-1][1] - h[0][1]
             if abs(dc) >= self.MIN_CMD and dg * (1.0 if dc > 0 else -1.0) < self.FOLLOW * abs(dc):
-                return True, behind
-        return False, behind
+                return True, behind_now
+        return False, behind_now

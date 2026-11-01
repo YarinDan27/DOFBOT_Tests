@@ -281,16 +281,15 @@ def where_is_claw(arm):
 
 def report_block(e):
     print("\n  STOPPED: %s." % e)
-    print("  The arm is holding still where it stopped. Look at it -- when the way is "
-          "clear, choose c.")
+    print("  It's holding still there. It moves again when you choose something.")
     print("  (Every move is in logs/motion/ -- send me the newest file.)")
 
 
 def power_on(arm):
     """
     Power on in place once every joint reports. A joint that can't report
-    may need moving by hand -- and the arm may be stiff -- so after a few
-    seconds: countdown, power OFF (go and hold it), move it until it beeps,
+    needs moving by hand -- and the arm may be stiff -- so: push it a little
+    and it lets go (teach.release, no countdown), move it until it beeps,
     power back on by itself. Ctrl-C = give up. True if powered.
     """
     if arm.powered:
@@ -303,9 +302,9 @@ def power_on(arm):
         angles = arm.read_angles(samples=1, ids=(1, 2, 3, 4))
         problem = arm.reading_problem(angles) or "a joint didn't answer"
         print("\n  Power isn't on yet: %s." % problem)
-        print("  So you can move it, its power goes OFF after the countdown: go and hold the")
-        print("  arm. Move it until it beeps -- power is back on, it holds itself -- then let go.")
-        teach.countdown(arm, config.TEACH_COUNTDOWN_S)
+        print("  Move it by hand; it powers on by itself when it can (long beep).")
+        if not teach.release(arm):
+            return False
     except KeyboardInterrupt:
         print("\n  Cancelled -- nothing changed.")
         return False
@@ -363,9 +362,8 @@ def rest(arm):
 def can_move(arm):
     """True if the arm may move now; otherwise says why (and how to fix it)."""
     if arm.blocked:
-        print("\n  The arm is holding still because the last move was stopped. Look at it;")
-        print("  when the way is clear, choose c.")
-        return False
+        # you chose to move it again: that's the go-ahead (no extra "c" step)
+        arm.clear_block()
     if not arm.powered:
         return power_on(arm)
     return True
@@ -660,8 +658,6 @@ def main():
             print("\n" + status_line(arm, state))
             for key, name, note in MENU:
                 print("  %s  %-24s %s" % (key, name, note))
-            if arm.blocked:
-                print("  c  Carry on               you looked at the arm and the way is clear")
             try:
                 choice = input("Choose: ").strip().lower()
             except (KeyboardInterrupt, EOFError):

@@ -7,9 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "2.6.0"
-VERSION_NOTE = ("lessons from Microduck: every command through one safety gate, a "
-                "fixed-rate motor loop, one program on the arm, servos that sag in --sim")
+VERSION = "2.6.1"
+VERSION_NOTE = ("teaching is simple again: push the arm and it lets go, no countdown, "
+                "no moving first; elbow and wrist read past 0-180; no false stops")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -42,9 +42,9 @@ CENTER = 90.0
 # refused good poses like the rest pose and still didn't stop real collisions.)
 JOINT_RANGE = {
     1: (0.0, 180.0),
-    2: (-10.0, 192.0),
-    3: (-10.0, 192.0),
-    4: (-15.0, 192.0),
+    2: (-45.0, 225.0),
+    3: (-45.0, 225.0),
+    4: (-45.0, 225.0),
     5: (0.0, 180.0),
     6: (0.0, 180.0),
 }
@@ -136,17 +136,18 @@ GATE_STEP_DEG = 15.0       # no single command may move servos 1-4 further than 
                            # where they were last sent (moves go in steps of a few degrees)
 
 # ---------- read-back checks (robot/arm.py) ----------
-STALL_DEG = 6.0            # a joint this far behind AND no longer following its
+STALL_DEG = 10.0           # a joint this far behind AND no longer following its
                            # commands = something is in the way: stop (motion.StallWatch)
-STALL_LAG_MAX = 14.0       # this far behind = stop, whatever it's doing
+STALL_LAG_MAX = 25.0       # this far behind = stop, whatever it's doing
+SAG_MAX_DEG = 4.0          # the most a loaded joint sags off its command (not counted as behind)
 SETTLE_DEG = 8.0           # at the end of a move every joint must be this close (a loaded
                            # servo sags a few degrees short of its target)
-SETTLE_CLOSE_DEG = 2.0     # ...and before the next move starts, it's either this close
-SETTLE_STILL_DEG = 1.5     # or has stopped moving (changed less than this since last read)
+SETTLE_STILL_DEG = 1.5     # ...and before the next move starts, it has stopped moving
+                           # (changed less than this since the last read)
 IMPOSSIBLE_BELOW_MM = 40.0 # readings that put the arm this far under the board = a servo
                            # is misreporting: don't move at all
-WIDE_READ_DEG = 20.0       # a joint up to this far past the end of its 0-180 scale still
-                           # reports (Arm_Lib alone says nothing past the end)
+WIDE_READ_DEG = 60.0       # joints 2-4 report up to this far past their 0-180 scale
+                           # (the elbow and wrist really do go there)
 
 # ---------- motion planning ----------
 HOVER_MM = 45.0            # how high above a piece to hover before descending
@@ -170,7 +171,9 @@ TEACH_READS = 5             # servo readings averaged per taught square
 TEACH_MAX_RESIDUAL_MM = 4.0 # a touch further than this from the fitted board is probably off
 
 # Hands-free at the arm: you put the CLOSED claw tip on top of a piece and hold still.
-TEACH_COUNTDOWN_S = 15      # time to walk from the computer to the arm before power goes off
+PUSH_DEG = 4.0             # push a held arm this far (any joint) and it lets go:
+                           # power off, long beep -- no countdown
+RELEASE_WAIT_S = 120       # ...giving up (nothing changes) if nobody comes
 TEACH_TICK_S = 0.25         # how often it reads the arm while you teach
 STILL_S = 2.0               # hold the claw still this long to record a square
 STILL_MM = 8.0              # "still" = the tip stays within this of one spot (a

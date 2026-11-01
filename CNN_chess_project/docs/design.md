@@ -5,7 +5,7 @@ These are the rules the code keeps. If you change something and a rule breaks, a
 ## The rules
 
 1. **One program drives the arm.** `robot/arm.py` takes a lock (`/tmp/dofbot_arm.lock`) before it opens the bus. A second copy gets a clear "another program is driving the arm (pid …)" and touches nothing. `run.py` also stops Yahboom's ROS arm driver at start.
-2. **Nothing moves at start.** Power comes on aimed at where each joint already is. The first move is one you can see coming: a countdown, then home.
+2. **Nothing moves at start.** Power comes on aimed at where each joint already is. The first move is one you can see coming: "going home in 3 s", then home. Power only goes off when you push the arm (you're holding it), never on a timer.
 3. **Every command goes through one gate** (`Arm._gate`), whoever sent it: the planner, keyboard control, teaching, a test. It refuses:
    - an angle that isn't a number;
    - an angle past what the servo can physically do (`JOINT_RANGE`), unless it's coming back in from there;
@@ -16,7 +16,7 @@ These are the rules the code keeps. If you change something and a rule breaks, a
 4. **Every move is simulated before it's sent** (`robot/safety.py`): the whole arm, every 2°, against everything. The gate is the second check, not the only one.
 5. **The motor loop keeps time** (`Arm._stream`). Every `CONTROL_DT` (0.1 s) the target is where the speed profile says the joints should be *at that moment*. A late tick doesn't make the move run in slow motion. A tick that's very late is skipped, not made up for with a burst.
 6. **A missed read pauses, it doesn't panic.** If a servo doesn't answer, the move holds that target for a tick. Three misses in a row (`READ_MISS_LIMIT`) means hold still and say which servo went quiet.
-7. **A joint that stops following its commands means something is in the way** (`motion.StallWatch`). Being a few degrees behind isn't enough, because a slow or loaded servo always is. What counts is the commands moving on while the joint doesn't. The sag a joint already had when the move began doesn't count either. Then it holds still right there (`ArmBlocked`) until you choose **c**.
+7. **A joint that stops following its commands means something is in the way** (`motion.StallWatch`). Being a few degrees behind isn't enough, because a slow or loaded servo always is. What counts is the commands moving on while the joint doesn't. The sag a joint already had when the move began doesn't count either. A servo answers a moment late, so the joint only has to be near one of the last 3 commands. Then it holds still right there (`ArmBlocked`) until you choose the next thing to do.
 8. **Ctrl-C never moves the arm.** Quitting with q never moves it either.
 9. **Every command and read-back is logged** (`logs/motion/`), and the loop's health (rate, late ticks, missed reads, refused commands) is printed on quit and shown in the 3D view.
 

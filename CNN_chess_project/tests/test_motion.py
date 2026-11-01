@@ -100,7 +100,7 @@ check("an arm leaning toward the board droops further toward it",
 print("\n--- 2. every move, against 12 random servo sets + the worst one (domain randomisation) ---")
 rng = random.Random(7)
 stops, worst_lag, slowest = [], 0.0, 0.0
-WORST = {"max_speed": 90.0, "sag": 4.0, "backlash": 2.0, "delay_s": 0.05, "noise": 0.6,
+WORST = {"max_speed": 90.0, "sag": 4.0, "backlash": 2.0, "delay_s": 0.2, "noise": 0.6,
          "miss_rate": 0.03}                      # every range at its bad end
 for k in range(13):
     params = servo_model.randomised(rng) if k < 12 else WORST
@@ -124,9 +124,9 @@ check("and every tour ended back home", at(REST) or bool(stops))
 print("    slowest tour: %.0f s" % slowest)
 
 # =====================================================================
-print("\n--- 3. something the model doesn't know about: it stops within a few ticks ---")
+print("\n--- 3. something the model doesn't know about: it stops within 0.8 s ---")
 for k, params in enumerate((servo_model.DEFAULTS, {"max_speed": 90.0, "sag": 4.0,
-                                                   "backlash": 2.0, "delay_s": 0.05})):
+                                                   "backlash": 2.0, "delay_s": 0.2})):
     a = new_arm(config.POSE_READY, params, seed=k)
     Arm_Lib.ELECTRONICS["z"] = (0.0, 130.0)           # the real box is taller than modelled
     outcome, t_stop = "arrived", None
@@ -138,7 +138,7 @@ for k, params in enumerate((servo_model.DEFAULTS, {"max_speed": 90.0, "sag": 4.0
     first = Arm_Lib.STATE.get("first_contact_t")
     late = (t_stop - first) if (t_stop and first) else None
     check("servo set %d: stopped, %.2f s after touching" % (k, late if late is not None else -1),
-          outcome == "blocked" and late is not None and late <= 3 * config.CONTROL_DT + 0.05)
+          outcome == "blocked" and late is not None and late <= 0.8)
 
 # =====================================================================
 print("\n--- 4. the safety gate: nothing unchecked reaches a motor ---")

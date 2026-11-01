@@ -98,19 +98,14 @@ def accept(arm, pose):
 
 def run(arm, camera=None):
     """Hands-free. Returns the saved pose, or None."""
-    from sessions.teach import BLUE, OFF, RED, _Light, _Stillness, _end_line, _show, countdown
+    from sessions.teach import BLUE, OFF, RED, _Light, _Stillness, _end_line, _show, release
 
-    print("\n--- Teach the home pose (hands-free at the arm) ---")
-    print("At the arm:")
-    print("  * wait for the LONG beep -- be holding the arm by then (power goes off)")
-    print("  * move it where it should wait: folded back resting, or up high with the camera")
-    print("    on the whole board -- and hold still %.0f s" % config.LOOK_HOLD_S)
-    print("  * blue light = usable, keep still; red = not usable here (a joint can't report,")
-    print("    or it's low over the board) -- move it")
-    print("  * long beep = saved, the arm holds itself there")
-    if camera is None:
-        print("  (camera off: no photo of the view this time)")
-    countdown(arm, config.TEACH_COUNTDOWN_S)
+    print("\n--- Teach the home pose ---")
+    print("  1. Push the arm a little -- it lets go (long beep).")
+    print("  2. Put it where it should wait (folded back, or up high looking at the board),")
+    print("     hold still %.0f s. Long beep = saved, it holds itself there." % config.LOOK_HOLD_S)
+    if not release(arm):
+        return None
 
     still = _Stillness()
     light = _Light(arm)

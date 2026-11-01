@@ -63,17 +63,34 @@ class Hand:
     """
     Moves the arm while its power is off, following a script of
     (seconds, pose) steps that starts when the power first goes off.
-    pose None = leave it where it is. Does nothing while the power is on
-    (you can't move a powered arm by hand).
+    pose None = leave it where it is. While the power is on you can't move
+    it -- but you can push it: GRAB_S after the scenario starts, the hand
+    pushes the shoulder PUSH degrees (it reads that far off) for 1 s every
+    3 s, which is how the arm knows to let go. Only until the power first goes
+    off, and only with a script.
     """
 
-    def __init__(self, steps):
+    GRAB_S = 2.0
+    PUSH = 6.0
+
+    def __init__(self, steps, grab=True):
         self.steps = steps
         self.t0 = None
+        self.started = None
+        self.grab = grab and bool(steps)
 
     def tick(self, now):
+        if self.started is None:
+            self.started = now
         if Arm_Lib.STATE["torque"]:
+            # push for 1 s every 3 s (the way you'd nudge it) until it lets go
+            if self.grab and self.t0 is None and now - self.started >= self.GRAB_S:
+                if (now - self.started - self.GRAB_S) % 3.0 < 1.0:
+                    Arm_Lib.READ_BIAS[2] = self.PUSH
+                else:
+                    Arm_Lib.READ_BIAS.pop(2, None)
             return
+        Arm_Lib.READ_BIAS.pop(2, None)
         if self.t0 is None:
             self.t0 = now
         t = now - self.t0
@@ -107,8 +124,8 @@ time.time = fake_time
 time.sleep = fake_sleep
 
 
-def start_scenario(hand_steps, limit_s=1500):
-    HAND["hand"] = Hand(hand_steps)
+def start_scenario(hand_steps, limit_s=1500, grab=True):
+    HAND["hand"] = Hand(hand_steps, grab)
     CLOCK["limit"] = CLOCK["now"] + limit_s
 
 
@@ -160,13 +177,13 @@ def hand_pose(sq, tilt_first=20, off_x=0.0):
 
 def silent_wrist(pose):
     """Same place, but the wrist bent far past its scale: it can't report."""
-    return pose[:3] + [-30.0] + pose[4:]
+    return pose[:3] + [-75.0] + pose[4:]
 
 
 HIGH_POSE = [90.0, 90.0, 90.0, 60.0, 90.0, config.CLAW_MAX]    # claw way up high
 
 SQUARES = list(config.TEACH_SQUARES)
-COUNTDOWN = [1] * 5 + [6]          # five short beeps, then the long one: power off
+LETGO = [6]                        # one long beep when it lets go -- no countdown
 
 
 def teach_steps(squares, wobble_square=None):
@@ -201,8 +218,10 @@ if frame is not None:
           "%.1f mm" % frame.square_size_mm()[0])
     check("saved to the board file", os.path.exists(config.BOARD_FILE))
 beeps = Arm_Lib.STATE["beeps"]
-check("beeps: countdown, then 1,2,3,4,5 for the squares, then a long one",
-      beeps == COUNTDOWN + [1] * 15 + [6], str(beeps))
+check("beeps: one long (let go), then 1,2,3,4,5 for the squares, then a long one",
+      beeps == LETGO + [1] * 15 + [6], str(beeps))
+check("no countdown, and the arm didn't move before letting go",
+      "Power goes OFF in" not in out and "couldn't move" not in out)
 lights = Arm_Lib.STATE["lights"]
 check("red light while the wrist couldn't report", teach.RED in lights)
 check("green light when a square was recorded", lights.count(teach.GREEN) == 5)
@@ -211,6 +230,27 @@ check("the first pause before moving wasn't recorded as a square",
       "B3 recorded" in out and taught_error(frame, "b3") <= 4.0)
 check("never touched the board", Arm_Lib.STATE["contacts"] == 0)
 check("tells you what to fix while the wrist is silent", "straighten the wrist" in out)
+
+# =====================================================================
+print("\n--- 1b. starting up high and taking your time doesn't stop it (your 1 Nov run) ---")
+Arm_Lib.reset([90.0, 90.0, 90.0, 60.0, 90.0, 150.0])      # claw way up high
+a = arm_mod.Arm()
+a.interactive = False
+start_scenario([(8.0, None)] + teach_steps(SQUARES[:3])[1:])
+ANSWERS[:] = [("Squares to teach", "b3 g3 b6")]
+frame, out = quiet(teach.run, a, None, None)
+check("all 3 recorded and saved, nothing asked", frame is not None and not ANSWERS
+      and sorted(frame.taught) == ["b3", "b6", "g3"])
+check("didn't call it 'stop teaching' before the first square", "to stop teaching" not in out)
+
+print("\n--- 1c. nobody pushes the arm: nothing changes ---")
+Arm_Lib.reset()
+a = arm_mod.Arm()
+start_scenario([(1.0, None)], grab=False)
+ANSWERS[:] = [("Squares to teach", ""), ("q = quit", "q")]
+frame, out = quiet(teach.run, a, None, None)
+check("gives up, power still on", "Nobody pushed it" in out and Arm_Lib.STATE["torque"]
+      and frame is None)
 
 # =====================================================================
 print("\n--- 2. stop early: lift the claw up high and hold still ---")
@@ -226,7 +266,7 @@ check("2 squares recorded, then it stopped", "B3 recorded" in out and "G3 record
 check("asked at the computer what to do (only 2 squares)", not ANSWERS)
 check("nothing saved", frame is None)
 beeps = Arm_Lib.STATE["beeps"]
-check("two beeps = stopped early, power on", beeps[-2:] == [1, 1] and 6 not in beeps[6:],
+check("two beeps = stopped early, power on", beeps[-2:] == [1, 1] and 6 not in beeps[1:],
       str(beeps))
 check("power is back on", Arm_Lib.STATE["torque"])
 
@@ -249,7 +289,7 @@ a.interactive = False
 bad = hand_pose("g6", off_x=12.0)          # 12 mm to the side of the pawn
 steps = [(3.0, None)] + [(3.0, hand_pose(sq) if sq != "g6" else bad) for sq in SQUARES]
 start_scenario(steps)
-ANSWERS[:] = [("Squares to teach", ""), ("a square = teach/redo", "g6")]
+ANSWERS[:] = [("Squares to teach", ""), ("redo that square", "g6")]
 real_teach_at_arm = teach._teach_at_arm
 
 
@@ -326,13 +366,13 @@ check("no questions besides the menu", not ANSWERS)
 # =====================================================================
 print("\n--- 7c. run.py: stiff arm (power on) with a joint that can't report ---")
 pose = hand_pose("e4")
-Arm_Lib.reset(pose[:2] + [-30.0] + pose[3:])       # elbow far past its scale, power ON
+Arm_Lib.reset(pose[:2] + [-75.0] + pose[3:])       # elbow far past its scale, power ON
 start_scenario([(3.0, None), (2.0, pose)])
 ANSWERS[:] = [("Choose", "q")]
 Arm_Lib.STATE["beeps"] = []
 _, out = quiet(run_mod.main)
-check("countdown, then power off so you can move it", "Power goes OFF in" in out
-      and "Power OFF" in out)
+check("you push it, it lets go so you can move it (no countdown)",
+      "Waiting for your push" in out and "Power OFF" in out and "Power goes OFF in" not in out)
 check("powers back on by itself once it can (long beep)", Arm_Lib.STATE["torque"]
       and "Power is on" in out and Arm_Lib.STATE["beeps"][-1] == 6, str(Arm_Lib.STATE["beeps"]))
 check("red light while the joint couldn't report", (90, 0, 0) in Arm_Lib.STATE["lights"])
@@ -380,7 +420,12 @@ Arm_Lib.set_pose([90.0, 60.0, 30.0, -5.0, 90.0, 150.0])
 got = a.read_angles(samples=1)
 check("wrist reads about -5 (not nothing, not 185)", got[3] is not None and abs(got[3] + 5) <= 2,
       str(got[3]))
-Arm_Lib.set_pose([90.0, 60.0, 30.0, -30.0, 90.0, 150.0])
+Arm_Lib.set_pose([90.0, 60.0, -30.0, -30.0, 90.0, 150.0])
+got = a.read_angles(samples=1)
+check("elbow and wrist at -30 report (2.6.1: up to 60 past)",
+      got[2] is not None and abs(got[2] + 30) <= 2 and got[3] is not None
+      and abs(got[3] + 30) <= 2, str(got[2:4]))
+Arm_Lib.set_pose([90.0, 60.0, 30.0, -75.0, 90.0, 150.0])
 check("far past the scale = no answer", a.read_angles(samples=1)[3] is None)
 
 # =====================================================================

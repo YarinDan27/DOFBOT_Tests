@@ -142,8 +142,10 @@ def inverse(x, y, z, approach_deg=180.0, prefer=None):
         }
         if within_limits(servos):
             if prefer is None:
-                # elbow-forward solution (keeps it away from the electronics)
-                score = servos[2]
+                # the one inside the comfortable range, then the elbow-forward
+                # one (keeps it away from the electronics) -- the physical range
+                # is wide, but the robot's own moves stay in the usual one
+                score = (0 if within_limits(servos, comfort=True) else 1, servos[2])
             else:
                 score = sum(abs(servos[i] - prefer[i - 1]) for i in range(1, 5))
             if best is None or score < best[0]:
