@@ -55,6 +55,21 @@ class ArmBlocked(Exception):
     """A joint didn't reach where it was sent. The arm is holding still."""
 
 
+class Stalled(ArmBlocked):
+    """A joint stopped following its commands (may be tried once more)."""
+
+
+def _stall_text(sid, behind, hist):
+    """What stopped, with the numbers -- so a pasted session log says what happened."""
+    tail = ""
+    if hist:
+        tail = " [sent %.0f, read %.0f; reads before: %s]" % (
+            hist[-1][0], hist[-1][1], " ".join("%.0f" % g for _, g in hist[:-1]))
+    return ("servo %d (%s) stopped %.0f degrees short of where it was sent -- something "
+            "is in the way, or the arm wasn't where I thought%s" % (sid, SERVO_NAMES[sid],
+                                                                    behind, tail))
+
+
 class StillLimp(Exception):
     """You chose to leave servo power off. The arm is floppy: put it down."""
 
@@ -259,7 +274,7 @@ class Arm:
         self._floor_margin = None
         # how the control loop is doing (shown in the 3D view, saved in the log)
         self.health = {"moves": 0, "ticks": 0, "overruns": 0, "read_misses": 0,
-                       "refused": 0, "worst_tick_s": 0.0, "hz": None}
+                       "refused": 0, "retries": 0, "worst_tick_s": 0.0, "hz": None}
         self._log_file = None
         self._open_log()
         # Power on aimed at where it already is -- only if servos 1-4 answer.
@@ -501,9 +516,10 @@ class Arm:
         if not h["moves"]:
             return "Motor loop: no moves yet"
         return ("Motor loop: %d move%s at %.1f Hz (aim %.0f), %d late ticks skipped, "
-                "%d missed reads, %d commands refused"
+                "%d missed reads, %d retried, %d commands refused"
                 % (h["moves"], "" if h["moves"] == 1 else "s", h["hz"] or 0.0,
-                   1.0 / config.CONTROL_DT, h["overruns"], h["read_misses"], h["refused"]))
+                   1.0 / config.CONTROL_DT, h["overruns"], h["read_misses"], h["retries"],
+                   h["refused"]))
 
     def _start_watch(self, watch, sids, begin=None):
         """
@@ -806,15 +822,27 @@ class Arm:
         whose shape is clear of everything solid. None if none is smooth.
         """
         found = []
+        # every 2 degrees of hand angle, and every half degree near the hand
+        # angle it has now: close to the edge of its reach, a 2 degree change
+        # of hand angle can move the elbow 15 degrees, so the smooth way
+        # through is between the coarse steps
+        here = 270.0 - (prev[1] + prev[2] + prev[3])
+        apps = set()
         app = config.APPROACH_STRAIGHT
         while app >= config.APPROACH_MIN - 1e-9:
+            apps.add(round(app, 2))
+            app -= 2.0
+        for k in range(-16, 17):
+            app = here + 0.5 * k
+            if config.APPROACH_MIN - 1e-9 <= app <= config.APPROACH_STRAIGHT + 1e-9:
+                apps.add(round(app, 2))
+        for app in sorted(apps, reverse=True):
             sol = kinematics.inverse(point[0], point[1], point[2], approach_deg=app,
                                      prefer=prev)
             if sol is not None and kinematics.within_limits(sol):
                 turn = max(abs(sol[k] - prev[k - 1]) for k in range(1, 5))
                 if turn <= config.LINE_MAX_TURN_DEG:
                     found.append((turn + 0.02 * (config.APPROACH_STRAIGHT - app), sol))
-            app -= 2.0
         for _, sol in sorted(found, key=lambda f: f[0]):
             if Arm._body_ok(sol, zone):
                 return sol
@@ -984,7 +1012,10 @@ class Arm:
             # the one safety.py simulated
             begin = {sid: current[sid - 1] for sid in joints}
             if config.SMOOTH_MOTION and joints:
-                self._stream(begin, joints, others)
+                try:
+                    self._stream(begin, joints, others)
+                except Stalled as e:
+                    self._retry_stage(e, current, joints, others)
                 for sid, a in stage.items():
                     current[sid - 1] = a
                 continue
@@ -1001,6 +1032,31 @@ class Arm:
                 self._move_checked(sub, ms, check=False)
             for sid, a in stage.items():
                 current[sid - 1] = a
+
+    def _retry_stage(self, error, current, joints, others):
+        """
+        A joint stopped following. A real servo sometimes lags for a moment
+        (a heavy pose, a slow start), so once: pause, look where the arm
+        really is, check the rest of the move from THERE is safe, and go on.
+        Stuck again = something really is in the way: hold still, ArmBlocked.
+        """
+        self.health["retries"] += 1
+        self.log("retry", why=str(error))
+        print("  (%s -- trying once more from where it is)" % str(error).split(" --")[0])
+        time.sleep(0.5)
+        got = self._read_joints_once()
+        if any(got[sid - 1] is None for sid in joints):
+            raise error
+        here = [got[i] if got[i] is not None else current[i] for i in range(4)]
+        there = [joints.get(sid, here[sid - 1]) for sid in (1, 2, 3, 4)]
+        ok, _ = safety.check_transition(here, there, self.zone)
+        if not ok:
+            raise error
+        self.blocked = False
+        # this time it must follow from the start: a stricter watch
+        strict = motion.StallWatch(stall_deg=config.STALL_DEG * 0.6,
+                                   lag_max=config.STALL_LAG_MAX * 0.5)
+        self._stream({sid: got[sid - 1] for sid in joints}, joints, others, watch=strict)
 
     def _read_joints_once(self):
         """
@@ -1023,7 +1079,7 @@ class Arm:
         self.last_seen_t = time.time()
         return out
 
-    def _stream(self, begin, end, others):
+    def _stream(self, begin, end, others, watch=None):
         """
         One smooth joint move (see robot/motion.py), run as a fixed-rate
         control loop -- the way Microduck's robotd runs its 50 Hz loop:
@@ -1052,7 +1108,7 @@ class Arm:
         misses = 0
         ticks = 0
         last_good = None
-        watch = motion.StallWatch()
+        watch = watch or motion.StallWatch()
         self._start_watch(watch, end, begin)
         self.health["moves"] += 1
         while True:
@@ -1094,10 +1150,7 @@ class Arm:
                 stalled, behind = watch.update(sid, target[sid], got[sid - 1])
                 if stalled:
                     self._hold_still(got)
-                    raise ArmBlocked(
-                        "servo %d (%s) stopped %.0f degrees short of where it was sent -- "
-                        "something is in the way, or the arm wasn't where I thought"
-                        % (sid, SERVO_NAMES[sid], behind))
+                    raise Stalled(_stall_text(sid, behind, watch.hist.get(sid)))
             if f >= 1.0:
                 break
         elapsed = time.time() - start
@@ -1136,9 +1189,8 @@ class Arm:
         worst = max(end, key=lambda sid: 999.0 if got[sid - 1] is None
                     else abs(got[sid - 1] - end[sid]))
         behind = 999.0 if got[worst - 1] is None else abs(got[worst - 1] - end[worst])
-        raise ArmBlocked("servo %d (%s) stopped %.0f degrees short of where it was sent -- "
-                         "something is in the way, or the arm wasn't where I thought"
-                         % (worst, SERVO_NAMES[worst], behind))
+        hist = None if got[worst - 1] is None else [(end[worst], got[worst - 1])]
+        raise Stalled(_stall_text(worst, behind, hist))
 
     def ready(self):
         """Joint move to a pose that straight-line planning can start from."""

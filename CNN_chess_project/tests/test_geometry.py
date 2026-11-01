@@ -11,7 +11,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config                                                   # noqa: E402
 from robot import kinematics                                    # noqa: E402
 from robot.arm import Arm                                       # noqa: E402
 from robot.board_frame import BoardFrame, all_squares, square_to_indexes  # noqa: E402
@@ -70,10 +69,24 @@ for sq in ["b2", "g2", "b6", "g6", "e4", "d6"]:
     sloppy[sq] = (x + random.uniform(-1, 1), y + random.uniform(-1, 1), z)
 x, y, z = sloppy["g6"]
 sloppy["g6"] = (x + 9.0, y, z)          # one touch 9 mm off
-res = BoardFrame.fit(sloppy).residuals()
-flagged = sorted(sq for sq, r in res.items() if r > config.TEACH_MAX_RESIDUAL_MM)
-check("only the 9 mm-off touch gets flagged", flagged == ["g6"],
-      ", ".join("%s %.1f" % (k, res[k]) for k in sorted(res)))
+from robot import board_learn                                  # noqa: E402
+touches = [{"square": sq, "xyz": list(xyz)} for sq, xyz in sloppy.items()]
+fitted, weights, dist = board_learn.fit(touches)
+plain = BoardFrame.fit(sloppy)
+
+
+def worst_error(f):
+    return max(max(abs(f.square_xyz(sq)[i] - truth[sq][i]) for i in range(3))
+               for sq in all_squares())
+
+
+check("a 9 mm-off touch counts for less than in a plain fit",
+      worst_error(fitted) < worst_error(plain) and weights[3] < 1.0,
+      "worst square %.1f mm vs %.1f plain" % (worst_error(fitted), worst_error(plain)))
+touches.append({"square": "c3", "xyz": [truth["c3"][0] + 30.0, truth["c3"][1], truth["c3"][2]]})
+fitted, weights, dist = board_learn.fit(touches)
+check("a touch on the wrong square (30 mm off) is left out by itself",
+      weights[-1] == 0 and all(w > 0 for w in weights[:-1]), str([round(w, 2) for w in weights]))
 
 try:
     BoardFrame.fit({sq: truth[sq] for sq in ["a1", "b2", "c3", "d4"]})

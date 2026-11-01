@@ -38,9 +38,10 @@ config.DATA_DIR = os.path.join(TMP, "data")
 config.CALIBRATION_DIR = os.path.join(TMP, "calibration")
 config.BOARD_FILE = os.path.join(config.CALIBRATION_DIR, "board_arm.json")
 config.LOOK_POSE_FILE = os.path.join(config.CALIBRATION_DIR, "look_pose.json")
+config.TOUCHES_FILE = os.path.join(config.CALIBRATION_DIR, "touches.json")
 
 from robot import arm as arm_mod                              # noqa: E402
-from robot import kinematics                                  # noqa: E402
+from robot import board_learn, kinematics                     # noqa: E402
 from robot.board_frame import BoardFrame                      # noqa: E402
 from sessions import look_pose, self_test, teach              # noqa: E402
 import run as run_mod                                         # noqa: E402
@@ -224,7 +225,10 @@ check("no countdown, and the arm didn't move before letting go",
       "Power goes OFF in" not in out and "couldn't move" not in out)
 lights = Arm_Lib.STATE["lights"]
 check("red light while the wrist couldn't report", teach.RED in lights)
-check("green light when a square was recorded", lights.count(teach.GREEN) == 5)
+check("green light when a square was recorded", lights.count(teach.GREEN) >= 5)
+check("learned from every touch, said how well in one line, no questions",
+      "Board learned from 5 touches on 5 squares" in out and "good" in out)
+check("every touch kept for next time", len(board_learn.load_touches()) == 5)
 check("power is back on at the end", Arm_Lib.STATE["torque"] and a.powered)
 check("the first pause before moving wasn't recorded as a square",
       "B3 recorded" in out and taught_error(frame, "b3") <= 4.0)
@@ -239,15 +243,16 @@ a.interactive = False
 start_scenario([(8.0, None)] + teach_steps(SQUARES[:3])[1:])
 ANSWERS[:] = [("Squares to teach", "b3 g3 b6")]
 frame, out = quiet(teach.run, a, None, None)
-check("all 3 recorded and saved, nothing asked", frame is not None and not ANSWERS
-      and sorted(frame.taught) == ["b3", "b6", "g3"])
+check("all 3 recorded and learned (added to the 5 before), nothing asked",
+      frame is not None and not ANSWERS and "B6 recorded" in out
+      and "from 8 touches" in out)
 check("didn't call it 'stop teaching' before the first square", "to stop teaching" not in out)
 
 print("\n--- 1c. nobody pushes the arm: nothing changes ---")
 Arm_Lib.reset()
 a = arm_mod.Arm()
 start_scenario([(1.0, None)], grab=False)
-ANSWERS[:] = [("Squares to teach", ""), ("q = quit", "q")]
+ANSWERS[:] = [("Squares to teach", "")]
 frame, out = quiet(teach.run, a, None, None)
 check("gives up, power still on", "Nobody pushed it" in out and Arm_Lib.STATE["torque"]
       and frame is None)
@@ -259,12 +264,12 @@ a = arm_mod.Arm()
 a.interactive = False
 steps = teach_steps(SQUARES[:2]) + [(10.0, HIGH_POSE)]
 start_scenario(steps)
-ANSWERS[:] = [("Squares to teach", ""), ("q = quit", "q")]
+ANSWERS[:] = [("Squares to teach", "")]
 frame, out = quiet(teach.run, a, None, None)
 check("2 squares recorded, then it stopped", "B3 recorded" in out and "G3 recorded" in out
       and "B6 recorded" not in out)
-check("asked at the computer what to do (only 2 squares)", not ANSWERS)
-check("nothing saved", frame is None)
+check("no questions: the 2 touches join the ones before", not ANSWERS and frame is not None
+      and "from 10 touches" in out, out[-200:])
 beeps = Arm_Lib.STATE["beeps"]
 check("two beeps = stopped early, power on", beeps[-2:] == [1, 1] and 6 not in beeps[1:],
       str(beeps))
@@ -276,36 +281,56 @@ Arm_Lib.reset()
 a = arm_mod.Arm()
 a.interactive = False
 start_scenario([(1.0, None)])
-ANSWERS[:] = [("Squares to teach", ""), ("q = quit", "q")]
+ANSWERS[:] = [("Squares to teach", "")]
 frame, out = quiet(teach.run, a, None, None)
-check("stops by itself after the idle time", "Nothing moved" in out)
+check("stops by itself after the idle time", "Nothing moved" in out
+      and "Nothing recorded" in out and not ANSWERS)
 check("power back on, long beep", Arm_Lib.STATE["torque"] and Arm_Lib.STATE["beeps"][-1] == 6)
 
 # =====================================================================
-print("\n--- 4. one bad touch is flagged; redo just that square ---")
+print("\n--- 4. a touch on the wrong spot is left out by itself; teach it again later ---")
+os.remove(config.TOUCHES_FILE)                 # a fresh start for this one
 Arm_Lib.reset()
 a = arm_mod.Arm()
 a.interactive = False
-bad = hand_pose("g6", off_x=12.0)          # 12 mm to the side of the pawn
+bad = hand_pose("g6", off_x=30.0)          # 30 mm to the side: the wrong square
 steps = [(3.0, None)] + [(3.0, hand_pose(sq) if sq != "g6" else bad) for sq in SQUARES]
 start_scenario(steps)
-ANSWERS[:] = [("Squares to teach", ""), ("redo that square", "g6")]
-real_teach_at_arm = teach._teach_at_arm
-
-
-def redo_with_good_hand(arm, squares, camera, photo_dir, frame):
-    if squares == ["g6"]:
-        start_scenario([(3.0, None), (3.0, hand_pose("g6"))])
-    return real_teach_at_arm(arm, squares, camera, photo_dir, frame)
-
-
-teach._teach_at_arm = redo_with_good_hand
+ANSWERS[:] = [("Squares to teach", "")]
 frame, out = quiet(teach.run, a, None, None)
-teach._teach_at_arm = real_teach_at_arm
-check("the bad touch was flagged", "G6" in out and "probably off" in out)
-check("after redoing it, saved without more questions", frame is not None and not ANSWERS)
+check("no questions", not ANSWERS and frame is not None)
+check("said G6 was left out", "Left out" in out and "G6" in out, out[-300:])
+if frame is not None:
+    worst = max(max(abs(frame.square_xyz(sq)[i] - true_xyz(sq)[i]) for i in range(3))
+                for sq in SQUARES)
+    check("the board is still right everywhere (within 4 mm)", worst <= 4.0, "%.1f mm" % worst)
+Arm_Lib.reset()
+a = arm_mod.Arm()
+start_scenario([(3.0, None), (3.0, hand_pose("g6"))])
+ANSWERS[:] = [("Squares to teach", "g6")]
+frame, out = quiet(teach.run, a, None, None)
+check("teaching g6 again on its own works (3+ squares already known)",
+      frame is not None and not ANSWERS and "from 5 touches on 5 squares" in out
+      and "Left out" not in out, out[-300:])
 if frame is not None:
     check("g6 is right now", taught_error(frame, "g6") <= 4.0, "%.1f mm" % taught_error(frame, "g6"))
+
+print("\n--- 4b. your 1 Nov touches (noisy, a1 and c3 twice): learned, nothing asked ---")
+os.remove(config.TOUCHES_FILE)
+YOURS = [("a1", (-70, 116, 43)), ("c3", (-28, 144, 38)), ("e5", (13, 187, 38)),
+         ("g7", (53, 214, 32)), ("h2", (73, 132, 35)), ("a1", (-63, 113, 34)),
+         ("c3", (-33, 142, 24))]
+frame = None
+for sq, xyz in YOURS:
+    frame, report = board_learn.update([{"square": sq, "xyz": list(xyz)}])
+check("learned from all 7, nothing left out", frame is not None and report["touches"] == 7
+      and not report["left_out"], str(report))
+if frame is not None:
+    check("squares come out ~19 mm, like your board", 18.0 <= frame.square_size_mm()[0] <= 20.0,
+          "%.1f mm" % frame.square_size_mm()[0])
+    check("a1 is between your two a1 touches (both used)",
+          -70.0 < frame.taught["a1"][0] < -63.0, str(frame.taught["a1"]))
+os.remove(config.TOUCHES_FILE)
 
 # =====================================================================
 print("\n--- 5. teach the look-at-board view hands-free ---")

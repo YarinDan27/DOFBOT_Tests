@@ -162,6 +162,19 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/preview":                  # where the program thinks each square is
+            path = os.path.join(config.DATA_DIR, "board_preview.jpg")
+            if not os.path.exists(path):
+                self.send_error(404, "no preview yet: menu 9 makes one")
+                return
+            with open(path, "rb") as fh:
+                data = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path not in ("/", "/stream"):
             self.send_error(404)
             return

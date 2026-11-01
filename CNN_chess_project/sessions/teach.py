@@ -12,10 +12,12 @@ than config.WIDE_READ_DEG past its 0-180 scale: bend it back a little).
 To stop early: lift the claw up high and hold still 4 s (two beeps).
 
 The arm doesn't move first, and nothing counts down: it only lets go once
-you're holding it. Only the claw tip's position is used: the board's
-squares come from forward kinematics of the servo readings, fitted by
-robot/board_frame.py. Touches that disagree by more than
-config.TEACH_MAX_RESIDUAL_MM are flagged, and you redo just that one.
+you're holding it. Only the claw tip's position is used: forward
+kinematics of the servo readings. Every touch, from every session, is kept
+and the board is learned from all of them (robot/board_learn.py): no redo
+questions, teach any square again any time and it's averaged in.
+At the end the light says how well it fits: green = good, yellow = OK,
+red + 3 beeps = rough (teach a few more squares).
 """
 import io
 import json
@@ -27,13 +29,14 @@ import sys
 import time
 
 import config
-from robot import kinematics
+from robot import board_learn, kinematics
 from robot.arm import ArmBlocked, FIX_BY_HAND, SERVO_NAMES
-from robot.board_frame import BoardFrame, is_square
+from robot.board_frame import is_square
 
 BLUE = (0, 0, 80)
 RED = (90, 0, 0)
 GREEN = (0, 90, 0)
+YELLOW = (80, 60, 0)
 OFF = (0, 0, 0)
 
 
@@ -53,10 +56,7 @@ def _ask_squares():
     for s in squares:
         if s not in unique:
             unique.append(s)
-    if len(unique) < 3:
-        print("  Need at least three different squares (four or five is better).")
-        return None
-    return unique
+    return unique              # any number: every touch is added to the ones before
 
 
 def _guide(squares):
@@ -316,25 +316,27 @@ def _finish_at_arm(arm, how):
     return ok
 
 
-def _review(taught):
-    """Fits the board to everything taught so far and grades each touch."""
-    frame = BoardFrame.fit({sq: d["xyz"] for sq, d in taught.items()})
-    print("\n  Board found: squares %.1f mm" % frame.square_size_mm()[0])
-    if len(taught) == 3:
-        print("  (3 squares only give a weak check -- 4 or more is better)")
-    residuals = frame.residuals()
-    bad = []
-    print("  How far each touch is from the board the others agree on:")
-    for sq in taught:
-        r = residuals[sq]
-        flag = ""
-        if r > config.TEACH_MAX_RESIDUAL_MM:
-            flag = "   <- probably off, redo it"
-            bad.append(sq)
-        print("    %s  %4.1f mm%s" % (sq.upper(), r, flag))
-    if not bad:
-        print("  All touches agree.")
-    return frame, bad
+def learn_from(arm, taught, session=None, at_arm=True):
+    """
+    Adds these touches ({square: point}) to every touch so far and learns
+    the board from all of them (robot/board_learn.py). No questions. At the
+    arm, the light says how it went: green = good, yellow = OK, red + 3 beeps
+    = rough (teach a few more squares). Returns the new BoardFrame or None.
+    """
+    touches = [board_learn.make_touch(sq, point, session) for sq, point in taught.items()]
+    frame, report = board_learn.update(touches)
+    print()
+    for line in board_learn.describe(frame, report):
+        print("  " + line)
+    if frame is not None:
+        frame.save()
+        print("  Saved: " + os.path.relpath(config.BOARD_FILE, config.ROOT))
+    if at_arm:
+        quality = report.get("quality") if frame is not None else "rough"
+        arm.light(*{"good": GREEN, "ok": YELLOW}.get(quality, RED))
+        if quality == "rough":
+            arm.beep(3)
+    return frame
 
 
 def _save_session(photo_dir, session, taught, frame):
@@ -368,47 +370,10 @@ def run(arm, camera=None, frame=None):
         print("  (camera off: no reference photos this time)")
 
     taught = _teach_at_arm(arm, squares, camera, photo_dir, frame)
-    new = None
-    while True:
-        new, bad = None, []
-        if len(taught) >= 3:
-            try:
-                new, bad = _review(taught)
-            except ValueError as e:
-                print("  " + str(e))
-        else:
-            print("\n  Only %d square(s) recorded -- need at least 3." % len(taught))
-        missing = [s for s in squares if s not in taught]
-        if new is not None and not bad and not missing:
-            break                      # all taught and they agree: save, no questions
-        if missing:
-            options = ["Enter = carry on with %s" % " ".join(s.upper() for s in missing),
-                       "s = save these" if new is not None else None]
-        else:
-            options = ["Enter = save"]
-        options += ["%s = redo that square" % (bad[0] if bad else squares[0]),
-                    "q = quit without saving"]
-        choice = input("\n  " + "   ".join(o for o in options if o) + ": ").strip().lower()
-        if new is not None and (choice == "s" or (choice == "" and not missing)):
-            break
-        if choice == "q":
-            new = None
-            break
-        again = None
-        if choice in ("", "c") and missing:
-            again = missing
-        elif is_square(choice):
-            again = [choice]
-        elif choice:
-            print("  Didn't understand %r." % choice)
-        if again:
-            more = _teach_at_arm(arm, again, camera, photo_dir, frame)
-            taught.update(more)
-
-    if new is None:
-        print("Nothing saved.")
+    if not taught:
+        print("  Nothing recorded -- nothing changed.")
         return None
-    new.save()
-    _save_session(photo_dir, session, taught, new)
-    print("\nSaved the board: " + os.path.relpath(config.BOARD_FILE, config.ROOT))
+    new = learn_from(arm, taught, session)
+    if new is not None:
+        _save_session(photo_dir, session, taught, new)
     return new

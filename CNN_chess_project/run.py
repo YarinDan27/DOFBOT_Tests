@@ -529,26 +529,23 @@ def keyboard_screen(arm, state):
     if taught is None:
         return
     state["jog_taught"] = taught
-    if len(taught) < 3:
-        if taught:
-            print("  %d square(s) marked -- mark 3 or more to make a board (kept until you "
-                  "quit)." % len(taught))
+    if not taught:
         return
-    try:
-        new, bad = teach._review(taught)
-    except ValueError as e:
-        print("  " + str(e))
+    # marked squares are touches like any other: added to all the others
+    new = teach.learn_from(arm, taught, at_arm=False)
+    state["jog_taught"] = {}
+    if new is None:
         return
-    if bad:
-        print("  Not saved: mark %s again (5, put the claw on it, m)." % " ".join(bad))
-        for sq in bad:
-            taught.pop(sq, None)
-        return
-    new.save()
     state["frame"] = new
     arm.set_board(new)
-    print("\nSaved the board from %d marked squares." % len(taught))
     print(board_map(new, {}, zone=arm.zone))
+
+
+def photos_screen(arm, state):
+    if not can_move(arm):
+        return
+    from sessions import photos         # needs OpenCV + numpy: only loaded when used
+    do(arm, photos.run, arm, start_camera(state), state["frame"])
 
 
 def electronics_screen(arm, state):
@@ -582,6 +579,7 @@ MENU = [("1", "Teach the board", "hands-free at the arm -- a pawn on each square
         ("6", "Camera test", "frame rate, brightness, a photo, live camera link"),
         ("7", "Teach the home pose", "hands-free at the arm: where it waits"),
         ("8", "Measure the electronics", "hands-free: touch the top of the black box"),
+        ("9", "Training photos", "the camera learns the pieces (train on your GPU)"),
         ("0", "Rest and quit", "folds back to rest, then quits (q = quit, stay put)")]
 
 
@@ -680,6 +678,8 @@ def main():
                 look_screen(arm, state)
             elif choice == "8":
                 electronics_screen(arm, state)
+            elif choice == "9":
+                photos_screen(arm, state)
             elif choice == "c" and arm.blocked:
                 arm.clear_block()
                 print("  OK -- moves are allowed again. Nothing moved.")

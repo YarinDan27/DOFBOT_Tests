@@ -15,7 +15,7 @@ python3 -m viz.export     # writes arm_view.html: the 3D view of your calibratio
 python3 -m viz.urdf       # writes dofbot_chess.urdf: the same arm model, for RViz or MuJoCo
 ```
 
-**v2.6.1.** The banner shows the version and what was last fixed. No questions at start-up. It stops Yahboom's ROS arm driver if it's running, which may ask for your password. Power comes on right where the arm is. It says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: resting, folded back over the electronics, or the home pose you taught.
+**v2.7.0.** The banner shows the version and what was last fixed. No questions at start-up. It stops Yahboom's ROS arm driver if it's running, which may ask for your password. Power comes on right where the arm is. It says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: resting, folded back over the electronics, or the home pose you taught.
 
 **Live 3D view:** while it runs, open the address it prints (`http://<jetson>:8081`) in a browser on your laptop. You see the arm as the program sees it, with its pose, the move it's making, the board, the electronics box, and every part's distance to them. A **motor loop** chip shows the loop rate and any late ticks, missed reads or refused commands. The same line is printed when you quit.
 
@@ -29,9 +29,10 @@ python3 -m viz.urdf       # writes dofbot_chess.urdf: the same arm model, for RV
 | 6 Camera test | Frees the camera, then shows frame rate and brightness, saves a photo and gives the live camera link |
 | 7 Teach the home pose | Hands-free: hold the arm where it should wait, still for 3 s |
 | 8 Measure the electronics | Hands-free: touch the closed claw on the top of the black box at three corners |
+| 9 Training photos | The camera learns the pieces: photos from home, labelled; the arm can shuffle pieces itself. Train on your GPU (below) |
 | 0 Rest and quit | Folds back to rest, then quits (**q** quits leaving it where it is) |
 
-### Teaching the board (2.6.1: no countdown)
+### Teaching the board (2.7: learns from every touch)
 
 Put a **pawn** on each square to teach (default b3 g3 b6 g6 e5). Choose 1 and press Enter. The arm doesn't move. Walk over:
 
@@ -39,9 +40,33 @@ Put a **pawn** on each square to teach (default b3 g3 b6 g6 e5). Choose 1 and pr
 2. Put the **closed claw tip on top of each pawn**, in order, and **hold still 2 s**. Beeps = how many are done.
 3. **Long beep** at the end: it holds itself again. Let go.
 
-Light: blue = waiting, green = recorded, red = a joint is past what it can report (bend it back a little). To stop early, lift the claw high and hold still 4 s. If all touches agree, it saves by itself.
+Light: blue = waiting, green = recorded, red = a joint is past what it can report (bend it back a little). To stop early, lift the claw high and hold still 4 s.
+
+**No redo questions.** Every touch from every session is kept (`calibration/touches.json`), and the board is fitted to all of them (`robot/board_learn.py`). A touch that disagrees counts for less, and one more than 15 mm off (the wrong square) is left out by itself. Teach a square again any time and it's averaged in. Even one square at a time works once the board has 3. At the end, the light says how well the touches agree: **green** = good (within ~5 mm), **yellow** = OK, **red + 3 beeps** = rough, so teach a few more squares. Spread them out (not all on one diagonal).
 
 The home pose (7) and the electronics (8) work the same way: push, move, hold still.
+
+## Training the camera (v2.7, your NVIDIA GPU)
+
+The camera learns to see the pieces with a CNN (`vision/square_cnn.py`): each square's picture becomes empty, white or black. That's enough to play, because the game history says which piece is which.
+
+**1. Photos, on the arm (menu 9).** The arm photographs the board from home, so first teach a home pose that sees the whole board (menu 7).
+- First time only: take every piece off and press Enter. The camera finds the board's grid and remembers it. Check the square names at `http://<jetson>:8080/preview`. If a1 is in the wrong corner, set `VIEW_ROTATE` in `config.py`.
+- Set up the pieces and press **Enter** (= starting position), or type a FEN. One photo labels all 64 squares.
+- **s 20**: the arm moves a random piece to a random empty square, goes home and takes a photo, 20 times, hands-free. It knows each position because it made the move.
+- Run menu 9 a few times in different light (day, evening, lamp). Each run is a session, and the newest session is kept aside as the test.
+
+**2. Train, on the PC with the GPU** (WSL; needs the NVIDIA driver on Windows).
+```bash
+pip install torch onnx opencv-python numpy        # once; PyTorch for Linux includes CUDA
+python3 -c "import torch; print(torch.cuda.is_available())"   # True = it found the GPU
+scp -r jetson@10.0.0.173:~/YDscripts/CNN_chess_project/data/raw ~/DOFBOT_Tests/CNN_chess_project/data/
+cd ~/DOFBOT_Tests/CNN_chess_project && python3 -m learn.make_squares && python3 -m learn.train
+scp -r models/v001 jetson@10.0.0.173:~/YDscripts/CNN_chess_project/models/
+```
+`learn.train` prints the test score per square and per whole board (all 64 right). It also saves `models/vNNN/` with the ONNX model, a manifest and a check file.
+
+**3. Use it, on the arm:** menu 9, **r** reads the board. The Jetson runs the model with OpenCV, with no PyTorch needed. At load it re-runs the check file and refuses a model that doesn't give the same answers as on the PC.
 
 ## Safety: the arm's real shape (v2.5)
 
@@ -85,7 +110,7 @@ Pollen Robotics' Microduck (shown at NVIDIA GTC Berlin) publishes all its robot 
 ## No-hardware checks (laptop, PC or Jetson)
 
 ```bash
-for t in geometry safety arm teach world motion urdf; do python3 tests/test_$t.py || break; done
+for t in geometry safety arm teach world motion urdf vision; do python3 tests/test_$t.py || break; done
 ```
 
 - `test_world.py` (v2.5) covers the arm's shape against the electronics, base and table. It checks your fold, your 190/0/0 rest and the 190/180/180 crash pose. It re-checks planned moves every 0.5°, runs the search around an obstacle, and covers smooth motion, stopping on an unknown obstacle, your board (from the squares you taught), keyboard control, the electronics model learning from a held pose, and that the 3D page draws the arm exactly where Python puts it.
@@ -93,6 +118,7 @@ for t in geometry safety arm teach world motion urdf; do python3 tests/test_$t.p
 - `test_arm.py` covers start-up, misreading servos, unknown obstacles and power-on in place.
 - `test_motion.py` (2.6) covers the servo model, the tour against random servo sets, stopping within 0.1 s of touching something the model doesn't know about, the gate catching a planner bug before the box, the loop surviving missed and slow reads, and the lock.
 - `test_urdf.py` (2.6) covers the URDF matching `robot/body.py` in 66 poses.
+- `test_vision.py` (2.7) runs the camera pipeline on drawn photos: finding the board, cutting squares, labelling, training (if PyTorch is installed), the Jetson's OpenCV classifier and its check at load, and menu 9 with the arm shuffling pieces.
 
 The simulated arm (`tests/fakes/Arm_Lib.py`) treats the board, table, electronics and base as solid, and stalls on contact like a real servo. With the servo model on (always in `--sim`), its servos also take time, sag and miss the odd read. `run.py --sim` uses it, with its own `sim/` folder, so it never touches the real calibration.
 
@@ -106,10 +132,11 @@ The simulated arm (`tests/fakes/Arm_Lib.py`) treats the board, table, electronic
 | `sessions/` | things the robot does with you: `teach.py`, `look_pose.py` (home pose), `electronics.py`, `jog.py` (keyboard), `self_test.py`, `play.py` | all working except play (M6) |
 | `viz/` | the 3D view: `viewer.html`, `live.py` (served while run.py runs), `export.py`, `scene.py`; `urdf.py` (the model for RViz/MuJoCo) | working |
 | `docs/` | `design.md`: the rules the arm code keeps, and why | |
-| `vision/` | sees things: `camera.py` working; `claw_check.py`, `board_finder.py`, `board_view.py`, `square_cnn.py`, `classifier.py` to build | partly |
+| `vision/` | sees things: `camera.py`, `board_finder.py` (the board's corners), `board_view.py` (64 squares), `square_cnn.py` (the CNN), `classifier.py` (runs it on the Jetson); `claw_check.py` to build | working (2.7) |
 | `game/` | thinks: `state.py` (python-chess), `engine.py` (Stockfish) | milestone M5 |
-| `learn/` | the CNN workshop: collect, make squares, dataset, train, evaluate | milestones M3–M4 |
-| `calibration/` | machine-written: `board_arm.json`, `look_pose.json` (home), `electronics.json` | written by options 1, 7, 8 |
+| `learn/` | the CNN workshop: `collect.py`, `make_squares.py`, `dataset.py`, `train.py` (GPU), `evaluate.py` | working (2.7) |
+| `models/` | trained CNNs, `v001/`… (git-ignored: copied from the PC) | written by learn/train.py |
+| `calibration/` | machine-written: `board_arm.json`, `touches.json` (every touch), `look_pose.json` (home), `electronics.json`, `board_view.json` (board in the home photo) | written by options 1, 5, 7, 8, 9 |
 | `data/`, `logs/`, `sim/` | photos, reports, session logs, the simulated run's own folders (git-ignored) | written by sessions |
 | `tests/` | no-hardware checks | working |
 

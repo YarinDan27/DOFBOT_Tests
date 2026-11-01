@@ -197,7 +197,7 @@ except arm_mod.ArmBlocked as e:
     outcome = "blocked: %s" % e
 Arm_Lib.ELECTRONICS["z"] = tuple(config.ELECTRONICS["z"])
 check("an unknown obstacle stops a smooth move", outcome.startswith("blocked"), outcome[:70])
-check("and it stopped within a few steps", Arm_Lib.STATE["contacts"] <= 8,
+check("and it stopped after one more try (a few steps each)", Arm_Lib.STATE["contacts"] <= 14,
       "%d contacts" % Arm_Lib.STATE["contacts"])
 check("then it holds still and refuses to move", a.blocked)
 

@@ -119,6 +119,40 @@ class BoardFrame:
         taught = {sq: [float(v) for v in xyz] for sq, xyz in points.items()}
         return cls([ox, oy, oz], [a, b, c], [-b, a, d], taught)
 
+    @classmethod
+    def fit_weighted(cls, observations, weights=None):
+        """
+        observations: [(square, (x, y, z)), ...] -- squares may repeat (every
+        touch counts). weights: 0..1 per observation (0 = leave it out). The
+        same rigid grid as fit(), by weighted least squares: each row is
+        scaled by sqrt(weight). `taught` becomes the weighted average touch
+        per square.
+        """
+        weights = [1.0] * len(observations) if weights is None else list(weights)
+        rows, values, z_rows, z_values = [], [], [], []
+        sums = {}
+        for (square, (x, y, z)), w in zip(observations, weights):
+            if w <= 0:
+                continue
+            f, r = square_to_indexes(square)
+            k = math.sqrt(w)
+            rows.append([k, 0.0, k * f, -k * r])
+            values.append(k * float(x))
+            rows.append([0.0, k, k * r, k * f])
+            values.append(k * float(y))
+            z_rows.append([k, k * f, k * r])
+            z_values.append(k * float(z))
+            acc = sums.setdefault(square, [0.0, 0.0, 0.0, 0.0])
+            for i, c in enumerate((x, y, z)):
+                acc[i] += w * float(c)
+            acc[3] += w
+        if len(sums) < 3:
+            raise ValueError("need at least three squares")
+        oz, c, d = least_squares(z_rows, z_values)
+        ox, oy, a, b = least_squares(rows, values)
+        taught = {sq: [acc[i] / acc[3] for i in range(3)] for sq, acc in sums.items()}
+        return cls([ox, oy, oz], [a, b, c], [-b, a, d], taught)
+
     # ---------------- using one ----------------
     def square_xyz(self, square):
         f, r = square_to_indexes(square)

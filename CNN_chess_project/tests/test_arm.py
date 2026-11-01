@@ -136,8 +136,8 @@ except arm_mod.ArmBlocked as e:
 Arm_Lib.BOARD["z"] = -13.0
 print("    " + outcome)
 check("stops on contact instead of pushing on", outcome.startswith("blocked"))
-check("only one or two sub-steps pushed before it stopped",
-      Arm_Lib.STATE["contacts"] <= 4, "%d contacts" % Arm_Lib.STATE["contacts"])
+check("only a few sub-steps (under a second) pushed before it stopped",
+      Arm_Lib.STATE["contacts"] <= 8, "%d contacts" % Arm_Lib.STATE["contacts"])
 
 print("\n--- 4. a servo doesn't answer at start: you move the arm, then it starts ---")
 Arm_Lib.reset(low_pose())

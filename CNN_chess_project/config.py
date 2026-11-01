@@ -7,9 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "2.6.1"
-VERSION_NOTE = ("teaching is simple again: push the arm and it lets go, no countdown, "
-                "no moving first; elbow and wrist read past 0-180; no false stops")
+VERSION = "2.7.0"
+VERSION_NOTE = ("the board is learned from every touch (no redo questions); a stuck "
+                "joint gets one more try; menu 9 + learn/: the camera learns the pieces on your GPU")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +19,9 @@ LOGS_DIR = os.path.join(ROOT, "logs")      # session reports (git-ignored)
 BOARD_FILE = os.path.join(CALIBRATION_DIR, "board_arm.json")
 LOOK_POSE_FILE = os.path.join(CALIBRATION_DIR, "look_pose.json")    # the home pose
 ELECTRONICS_FILE = os.path.join(CALIBRATION_DIR, "electronics.json")  # if measured
+TOUCHES_FILE = os.path.join(CALIBRATION_DIR, "touches.json")  # every teaching touch, kept
+BOARD_VIEW_FILE = os.path.join(CALIBRATION_DIR, "board_view.json")  # board corners in the home photo
+MODELS_DIR = os.path.join(ROOT, "models")                  # trained CNNs: models/v001/ ...
 
 # ---------- arm hardware (from the manufacturer's URDF; never changes) ----------
 H = 107.5          # table surface to shoulder pivot (servo 2), mm
@@ -168,7 +171,6 @@ APPROACH_MIN = 120.0       # most we'll let the hand tilt to reach far squares
 # servo past its range can't report its angle.
 TEACH_SQUARES = ["b3", "g3", "b6", "g6", "e5"]
 TEACH_READS = 5             # servo readings averaged per taught square
-TEACH_MAX_RESIDUAL_MM = 4.0 # a touch further than this from the fitted board is probably off
 
 # Hands-free at the arm: you put the CLOSED claw tip on top of a piece and hold still.
 PUSH_DEG = 4.0             # push a held arm this far (any joint) and it lets go:
@@ -197,6 +199,8 @@ QUICK_SQUARES = ["a1", "d1", "h1", "a4", "e4", "h4", "a6", "d6", "h6",
                  "b8", "g8"]
 
 # ---------- camera ----------
+VIEW_ROTATE = 0            # the home photo's a1 corner: 0 = bottom-left, 90/180/270 = turned
+                           # clockwise from there (check once: http://<jetson>:8080/preview)
 CAMERA_INDEX = 0           # tried first; every other /dev/video* is tried after it
 CAMERA_FREE_DEVICE = True  # on start, stop other programs holding the camera (fuser)
 CAMERA_RELEASE_S = 2.0     # wait after freeing it (and between tries) for the device to let go

@@ -51,6 +51,12 @@ def _advance():
         if not m.known(i):          # power just came on here: the motor is where the joint is
             m.hold(i, old[i - 1])
     motor = [m.motor(i, old[i - 1], now) for i in range(1, 5)]
+    # STATE["sticky"] = {servo: until}: that servo is stuck for a moment (a
+    # heavy pose, a slow start) -- it stays put, then carries on when told
+    for sid, until in list(STATE.get("sticky", {}).items()):
+        if now < until:
+            m.hold(sid, old[sid - 1] - m.droop(old)[sid - 1])
+            motor[sid - 1] = old[sid - 1] - m.droop(old)[sid - 1]
     droop = m.droop(motor)
     new = [motor[i] + droop[i] for i in range(4)]
     if max(abs(new[i] - old[i]) for i in range(4)) < 1e-9:
@@ -85,6 +91,7 @@ def reset(pose=(90, 90, 90, 90, 90, 150)):
     STATE["contacts"] = 0
     STATE.pop("first_contact_t", None)
     STATE.pop("first_contact", None)
+    STATE.pop("sticky", None)
     STATE["beeps"] = []
     STATE["lights"] = []
     READ_BIAS.clear()

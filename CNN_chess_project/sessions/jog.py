@@ -244,6 +244,6 @@ def _mark(arm, camera, keys, taught):
         print("  A joint didn't answer -- try again.")
         return
     taught[name] = point
-    print("  %s recorded at x=%.0f y=%.0f z=%.0f (%d marked so far%s)" % (
-        name.upper(), point["xyz"][0], point["xyz"][1], point["xyz"][2], len(taught),
-        "" if len(taught) >= 3 else "; 3 or more make a board"))
+    print("  %s recorded at x=%.0f y=%.0f z=%.0f (%d marked; added to the board when you "
+          "leave keyboard control)" % (name.upper(), point["xyz"][0], point["xyz"][1],
+                                       point["xyz"][2], len(taught)))
