@@ -15,7 +15,7 @@ python3 -m viz.export     # writes arm_view.html: the 3D view of your calibratio
 python3 -m viz.urdf       # writes dofbot_chess.urdf: the same arm model, for RViz or MuJoCo
 ```
 
-**v2.7.0.** The banner shows the version and what was last fixed. No questions at start-up. It stops Yahboom's ROS arm driver if it's running, which may ask for your password. Power comes on right where the arm is. It says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: resting, folded back over the electronics, or the home pose you taught.
+**v2.7.1.** The banner shows the version and what was last fixed. No questions at start-up. It stops Yahboom's ROS arm driver if it's running, which may ask for your password. Power comes on right where the arm is. It says where the claw is, and after 3 s (Ctrl-C = stay) it goes **home**: resting, folded back over the electronics, or the home pose you taught.
 
 **Live 3D view:** while it runs, open the address it prints (`http://<jetson>:8081`) in a browser on your laptop. You see the arm as the program sees it, with its pose, the move it's making, the board, the electronics box, and every part's distance to them. A **motor loop** chip shows the loop rate and any late ticks, missed reads or refused commands. The same line is printed when you quit.
 
@@ -48,25 +48,21 @@ The home pose (7) and the electronics (8) work the same way: push, move, hold st
 
 ## Training the camera (v2.7, your NVIDIA GPU)
 
-The camera learns to see the pieces with a CNN (`vision/square_cnn.py`): each square's picture becomes empty, white or black. That's enough to play, because the game history says which piece is which.
+The arm's own camera takes the photos. No phone needed. A CNN (`vision/square_cnn.py`) learns from them to see each square as empty, white or black. That's enough to play, because the game history says which piece is which.
 
-**1. Photos, on the arm (menu 9).** The arm photographs the board from home, so first teach a home pose that sees the whole board (menu 7).
-- First time only: take every piece off and press Enter. The camera finds the board's grid and remembers it. Check the square names at `http://<jetson>:8080/preview`. If a1 is in the wrong corner, set `VIEW_ROTATE` in `config.py`.
-- Set up the pieces and press **Enter** (= starting position), or type a FEN. One photo labels all 64 squares.
-- **s 20**: the arm moves a random piece to a random empty square, goes home and takes a photo, 20 times, hands-free. It knows each position because it made the move.
-- Run menu 9 a few times in different light (day, evening, lamp). Each run is a session, and the newest session is kept aside as the test.
+**1. On the arm, menu 9** (the arm photographs the board from home, so first teach a home pose that sees the whole board with menu 7):
+- First time only: take every piece off and press Enter. The camera finds the board and remembers it. You can check the square names at `http://<jetson>:8080/preview`.
+- Set up the starting position and press **Enter**: one photo. Then **s**: the arm moves pieces around by itself and takes 20 more photos.
+- Do this a few times in different light. Each time is a session.
 
-**2. Train, on the PC with the GPU** (WSL; needs the NVIDIA driver on Windows).
+**2. On the PC with the GPU: one command.** It copies the photos from the arm, trains on the GPU and sends the model back:
 ```bash
-pip install torch onnx opencv-python numpy        # once; PyTorch for Linux includes CUDA
-python3 -c "import torch; print(torch.cuda.is_available())"   # True = it found the GPU
-scp -r jetson@10.0.0.173:~/YDscripts/CNN_chess_project/data/raw ~/DOFBOT_Tests/CNN_chess_project/data/
-cd ~/DOFBOT_Tests/CNN_chess_project && python3 -m learn.make_squares && python3 -m learn.train
-scp -r models/v001 jetson@10.0.0.173:~/YDscripts/CNN_chess_project/models/
+pip install torch onnx opencv-python numpy        # once
+python3 -m learn                                  # or: python3 -m learn <login>@10.0.0.173
 ```
-`learn.train` prints the test score per square and per whole board (all 64 right). It also saves `models/vNNN/` with the ONNX model, a manifest and a check file.
+Tip: `ssh-copy-id jetson@10.0.0.173` once, and it stops asking for the password. It prints the test score: squares right, and photos with all 64 right.
 
-**3. Use it, on the arm:** menu 9, **r** reads the board. The Jetson runs the model with OpenCV, with no PyTorch needed. At load it re-runs the check file and refuses a model that doesn't give the same answers as on the PC.
+**3. On the arm, menu 9, r:** reads the board with the new model. The Jetson runs the model with OpenCV, with no PyTorch needed. At load it checks the model gives the same answers it gave on the PC.
 
 ## Safety: the arm's real shape (v2.5)
 
@@ -81,7 +77,7 @@ Now there are no per-servo safety limits, only what each servo can physically do
 - **Every move is simulated before it runs** (`robot/safety.py`): every 2°, the whole arm against everything. If moving all joints at once isn't safe, it tries one joint at a time in every order, then going via upright, ready or shoulder-first. As a last resort it searches joint space (RRT-connect, `SEARCH_TIME_S`).
 - **Straight lines** (going down to pieces) keep every pose clear too, and never flip the elbow halfway (2.4.2).
 - **Smooth motion** (`robot/motion.py`, `SMOOTH_MOTION`): joints move together on a speed profile (40°/s, gentle start and stop). A new target goes out every 0.1 s and every one is **read back**. If a joint stops following while its commands keep going, something is in the way: it **stops and holds still** there, and moves again when you choose something (2.6.1). Set `SMOOTH_MOTION = False` to go back to the 2.4 start-stop sub-steps.
-- **Readings past the scale** (2.4.3): Yahboom's `Arm_serial_servo_read` says nothing outside 0–180°, so the program reads the same register itself, up to 60° past (2.6.1: the elbow and wrist really go there). It never uses `Arm_serial_servo_read_any`, which forgets that servos 2–4 are flipped: a wrist at −6° came back as 186°, the likely cause of the 24 Oct crash.
+- **Past 0–180 is fine** (2.7.1). Yahboom's `Arm_serial_servo_read` says nothing outside 0–180°, so the program reads the same register itself, up to 90° past. If a powered joint still can't report, the program takes it to be where it was last sent (a powered servo holds that). It says so once and moves slowly (`CAREFUL_SPEED`) until the joint reports again. It doesn't stop. It never uses `Arm_serial_servo_read_any`, which forgets that servos 2–4 are flipped: a wrist at −6° came back as 186°, the likely cause of the 24 Oct crash.
 - **Impossible readings** (part of the arm under the table or deep inside the electronics) mean a servo is misreporting: it won't move.
 - **Power comes on aimed at where the arm already is.** A joint that can't report: push the arm, it lets go, move that joint back a little, and it powers on by itself (long beep).
 - **Only one program drives the arm.** It stops Yahboom's ROS driver and other copies of itself at start, and (2.6) holds a lock while it runs.

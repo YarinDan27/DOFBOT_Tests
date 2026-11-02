@@ -147,9 +147,8 @@ def run(arm, camera, frame):
     saved = [0]
     position = collect.position_from_fen(collect.START_FEN)
     while True:
-        print("\n  Set up the pieces, then: Enter = it's the starting position, e = empty board,")
-        print("  or type the position as a FEN.  s 20 = the arm shuffles pieces itself (20 photos),")
-        print("  r = read the board with the latest model,  q = done")
+        print("\n  Enter = photo of the starting position   s = the arm shuffles pieces, 20 photos")
+        print("  r = read the board (trained model)   q = done   (e = empty board, or a FEN)")
         raw = input("  Photos so far: %d. Choose: " % saved[0]).strip()
         if raw.lower() == "q":
             break

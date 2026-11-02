@@ -265,6 +265,8 @@ class Arm:
         # for the live 3D view: what the servos last said / were last sent
         self.last_angles = [None] * 6
         self.last_read = [None] * 6     # what the servos last SAID (last_angles also takes sends)
+        self.estimated = set()          # powered joints that can't report: taken as where they were sent
+        self.last_raw = {}              # servo -> the raw register word of its last wide read
         self.last_seen_t = 0.0
         self.last_plan = []         # [[s1..s4], ...] of the move being made
         # what each servo was last sent: the gate compares every command with it
@@ -453,7 +455,9 @@ class Arm:
             time.sleep(0.003)
             word = bus.read_word_data(addr, servo_id + 0x30)
         except Exception:
+            self.last_raw[servo_id] = "read error"
             return None
+        self.last_raw[servo_id] = word
         if not word:
             return None                         # 0 = no data from that servo
         pos = (word >> 8 & 0xff) | (word << 8 & 0xff00)
@@ -493,6 +497,35 @@ class Arm:
                 self.last_angles[i] = out[i]
                 self.last_read[i] = out[i]
         self.last_seen_t = time.time()
+        return self._fill_unknown(out, ids)
+
+    def _fill_unknown(self, out, ids):
+        """
+        A powered joint that can't report (far past its 0-180 scale) is still
+        holding where it was last sent -- that's what a powered servo does --
+        so use that instead of stopping everything. Moves go slowly
+        (CAREFUL_SPEED) until it reports again. A floppy arm has no such
+        guess: None stays None.
+        """
+        for sid in ids:
+            if sid > 4:
+                continue
+            if out[sid - 1] is not None:
+                if sid in self.estimated:
+                    self.estimated.discard(sid)
+                    self.log("reports_again", servo=sid, angle=out[sid - 1])
+                continue
+            guess = self.sent[sid - 1] if (self.powered and not self.is_limp) else None
+            if guess is None:
+                continue
+            out[sid - 1] = float(guess)
+            self.last_angles[sid - 1] = float(guess)
+            self.health["read_misses"] += 1
+            if sid not in self.estimated:
+                self.estimated.add(sid)
+                self.log("estimated", servo=sid, angle=guess, raw=str(self.last_raw.get(sid)))
+                print("  (%s can't report its angle -- going by where it was sent (%.0f) and "
+                      "moving slowly until it does)" % (SERVO_NAMES[sid], guess))
         return out
 
     def move_servos(self, angles, duration_ms=400, wait=True, check=True):
@@ -1077,7 +1110,7 @@ class Arm:
                     self.last_read[sid - 1] = out[sid - 1]
                     break
         self.last_seen_t = time.time()
-        return out
+        return self._fill_unknown(out, (1, 2, 3, 4))
 
     def _stream(self, begin, end, others, watch=None):
         """
@@ -1100,7 +1133,9 @@ class Arm:
         """
         dt = config.CONTROL_DT
         biggest = max([abs(end[s] - begin[s]) for s in end] or [0.0])
-        total = motion.duration(biggest)
+        # a joint that can't report: slowly (it's only a guess where it is)
+        speed = config.JOINT_SPEED_DEG_S * (config.CAREFUL_SPEED if self.estimated else 1.0)
+        total = motion.duration(biggest, speed)
         ms = int(dt * 1000 * 1.5)
         start = time.time()
         paused = 0.0                 # trajectory time skipped while reads failed
@@ -1117,7 +1152,7 @@ class Arm:
                 self._hold_still(self.read_angles(samples=1, ids=(1, 2, 3, 4)))
                 raise ArmBlocked("you pressed STOP")
             t = time.time() - start - paused
-            f = 1.0 if biggest < 1e-9 or t >= total else motion.position(t, biggest) / biggest
+            f = 1.0 if biggest < 1e-9 or t >= total else motion.position(t, biggest, speed) / biggest
             target = {s: begin[s] + (end[s] - begin[s]) * f for s in end}
             send = dict(target)
             if f >= 1.0:
@@ -1147,6 +1182,8 @@ class Arm:
             misses = 0
             last_good = got
             for sid in target:
+                if sid in self.estimated:
+                    continue                 # can't see it: nothing to compare
                 stalled, behind = watch.update(sid, target[sid], got[sid - 1])
                 if stalled:
                     self._hold_still(got)

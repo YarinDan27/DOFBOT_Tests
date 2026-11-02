@@ -222,8 +222,20 @@ try:
 except arm_mod.ArmBlocked as e:
     outcome = str(e)
 EVENTS[:] = []
+check("a servo that goes silent (past its scale) doesn't stop the arm: it goes by where "
+      "that joint was sent", outcome == "arrived" and at(REST), outcome[:60])
+check("and says so", 3 in a.estimated or a.health["read_misses"] > 3)
+t0 = CLOCK[0]
+a.move_to_pose(config.POSE_READY)
+slow = CLOCK[0] - t0
 Arm_Lib.SILENT.clear()
-check("a servo that stays silent stops it", "stopped answering" in outcome, outcome[:60])
+a.estimated.clear()
+Arm_Lib.reset(REST)
+b = new_arm(REST, False)
+t0 = CLOCK[0]
+b.move_to_pose(config.POSE_READY)
+check("moves go slowly while a joint can't report", slow > 1.6 * (CLOCK[0] - t0),
+      "%.1f s vs %.1f s" % (slow, CLOCK[0] - t0))
 
 # slow reads: the loop keeps its schedule instead of running in slow motion
 real_read = Arm_Lib.Arm_Device.Arm_serial_servo_read

@@ -178,7 +178,7 @@ def hand_pose(sq, tilt_first=20, off_x=0.0):
 
 def silent_wrist(pose):
     """Same place, but the wrist bent far past its scale: it can't report."""
-    return pose[:3] + [-75.0] + pose[4:]
+    return pose[:3] + [-100.0] + pose[4:]
 
 
 HIGH_POSE = [90.0, 90.0, 90.0, 60.0, 90.0, config.CLAW_MAX]    # claw way up high
@@ -391,7 +391,7 @@ check("no questions besides the menu", not ANSWERS)
 # =====================================================================
 print("\n--- 7c. run.py: stiff arm (power on) with a joint that can't report ---")
 pose = hand_pose("e4")
-Arm_Lib.reset(pose[:2] + [-75.0] + pose[3:])       # elbow far past its scale, power ON
+Arm_Lib.reset(pose[:2] + [-100.0] + pose[3:])      # elbow far past its scale, power ON
 start_scenario([(3.0, None), (2.0, pose)])
 ANSWERS[:] = [("Choose", "q")]
 Arm_Lib.STATE["beeps"] = []
@@ -447,11 +447,16 @@ check("wrist reads about -5 (not nothing, not 185)", got[3] is not None and abs(
       str(got[3]))
 Arm_Lib.set_pose([90.0, 60.0, -30.0, -30.0, 90.0, 150.0])
 got = a.read_angles(samples=1)
-check("elbow and wrist at -30 report (2.6.1: up to 60 past)",
+check("elbow and wrist at -30 report (2.7.1: up to 90 past)",
       got[2] is not None and abs(got[2] + 30) <= 2 and got[3] is not None
       and abs(got[3] + 30) <= 2, str(got[2:4]))
-Arm_Lib.set_pose([90.0, 60.0, 30.0, -75.0, 90.0, 150.0])
-check("far past the scale = no answer", a.read_angles(samples=1)[3] is None)
+Arm_Lib.set_pose([90.0, 60.0, 30.0, -100.0, 90.0, 150.0])
+got = a.read_angles(samples=1)
+check("far past even that, powered: it goes by where the wrist was sent (no stop)",
+      (got[3] is not None and a.sent[3] is not None and abs(got[3] - a.sent[3]) < 1e-6
+       and 4 in a.estimated) if a.powered else got[3] is None, str(got[3]))
+a.limp()
+check("...but floppy, there's no guess: no answer", a.read_angles(samples=1)[3] is None)
 
 # =====================================================================
 print("\n--- 7b. every command in every motion log was a small step ---")

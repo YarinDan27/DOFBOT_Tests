@@ -253,6 +253,38 @@ check("every photo's label is what was really on the board",
       [m["position"] for m in metas] == shots[-5:])
 check("never touched anything", Arm_Lib.STATE["contacts"] == 0)
 
+# =====================================================================
+print("\n--- 5. python3 -m learn: photos from the arm -> train -> model back (fake ssh) ---")
+if have_torch:
+    import learn.__main__ as one_command                       # noqa: E402
+    REMOTE = os.path.join(TMP, "jetson")                        # pretend Jetson disk
+    shutil.copytree(os.path.join(config.DATA_DIR, "raw"), os.path.join(REMOTE, "data", "raw"))
+    shutil.rmtree(config.DATA_DIR)                              # the PC starts with nothing
+    shutil.rmtree(config.MODELS_DIR)
+    calls = []
+
+    def fake_call(cmd):
+        calls.append(cmd[0])
+        local = [c.split(":", 1)[1].replace("~/jet", REMOTE) if ":" in c and "@" in c else c
+                 for c in cmd]
+        if cmd[0] == "ssh":
+            os.makedirs(os.path.join(REMOTE, "models"), exist_ok=True)
+            return 0
+        src, dst = local[2], local[3]
+        target = os.path.join(dst, os.path.basename(src.rstrip("/")))
+        shutil.copytree(src, target)
+        return 0
+
+    one_command.subprocess.call = fake_call
+    config.JETSON_DIR = "~/jet"
+    quick = train.train
+    train.train = lambda: quick(epochs=2, batch=64, log=lambda *a: None)
+    code = one_command.main(["me@arm"])
+    train.train = quick
+    sent = os.listdir(os.path.join(REMOTE, "models")) if os.path.isdir(os.path.join(REMOTE, "models")) else []
+    check("one command: copied the photos, trained, sent the model back",
+          code == 0 and calls == ["scp", "ssh", "scp"] and sent == ["v001"], "%s %s" % (calls, sent))
+
 print("\n%d failure(s)" % len(failures))
 if failures:
     for f in failures:

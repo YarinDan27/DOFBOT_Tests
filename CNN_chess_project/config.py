@@ -7,9 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "2.7.0"
-VERSION_NOTE = ("the board is learned from every touch (no redo questions); a stuck "
-                "joint gets one more try; menu 9 + learn/: the camera learns the pieces on your GPU")
+VERSION = "2.7.1"
+VERSION_NOTE = ("joints past 0-180 are fine: read up to 90 past, and a silent one goes "
+                "by where it was sent, slowly -- no stop; python3 -m learn trains on the PC")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +22,8 @@ ELECTRONICS_FILE = os.path.join(CALIBRATION_DIR, "electronics.json")  # if measu
 TOUCHES_FILE = os.path.join(CALIBRATION_DIR, "touches.json")  # every teaching touch, kept
 BOARD_VIEW_FILE = os.path.join(CALIBRATION_DIR, "board_view.json")  # board corners in the home photo
 MODELS_DIR = os.path.join(ROOT, "models")                  # trained CNNs: models/v001/ ...
+JETSON_SSH = "jetson@10.0.0.173"          # the arm, for  python3 -m learn  on the PC
+JETSON_DIR = "~/YDscripts/CNN_chess_project"
 
 # ---------- arm hardware (from the manufacturer's URDF; never changes) ----------
 H = 107.5          # table surface to shoulder pivot (servo 2), mm
@@ -44,10 +46,10 @@ CENTER = 90.0
 # electronics. (v2.4 and before had per-servo limits here, 10-140 etc., which
 # refused good poses like the rest pose and still didn't stop real collisions.)
 JOINT_RANGE = {
-    1: (0.0, 180.0),
-    2: (-45.0, 225.0),
-    3: (-45.0, 225.0),
-    4: (-45.0, 225.0),
+    1: (-90.0, 270.0),
+    2: (-90.0, 270.0),
+    3: (-90.0, 270.0),
+    4: (-90.0, 270.0),
     5: (0.0, 180.0),
     6: (0.0, 180.0),
 }
@@ -149,8 +151,10 @@ SETTLE_STILL_DEG = 1.5     # ...and before the next move starts, it has stopped 
                            # (changed less than this since the last read)
 IMPOSSIBLE_BELOW_MM = 40.0 # readings that put the arm this far under the board = a servo
                            # is misreporting: don't move at all
-WIDE_READ_DEG = 60.0       # joints 2-4 report up to this far past their 0-180 scale
-                           # (the elbow and wrist really do go there)
+WIDE_READ_DEG = 90.0       # joints 1-4 report up to this far past their 0-180 scale
+                           # (they really do go there). Past 180 is fine, not a problem.
+CAREFUL_SPEED = 0.5        # a joint that can't report at all (while powered) is taken to be
+                           # where it was last sent, and moves go at this share of full speed
 
 # ---------- motion planning ----------
 HOVER_MM = 45.0            # how high above a piece to hover before descending
