@@ -31,10 +31,22 @@ PREVIEW = "board_preview.jpg"
 
 
 def _photo(arm, camera):
-    """Home, then a fresh frame. None if the camera gave nothing."""
-    arm.go_home()
+    """
+    Home -- exactly (v2.7.2: within HOME_TOL_DEG, the base always arriving
+    from the same side), so the board is where the camera found it -- then a
+    fresh frame. None if it isn't exactly home or the camera gave nothing
+    (says which).
+    """
+    off = arm.go_home()
+    if off is None or off > 2 * config.HOME_TOL_DEG:
+        print("  Not exactly home (%s) -- no photo: the board would be shifted in it."
+              % ("a joint didn't answer" if off is None else "%.1f degrees off" % off))
+        return None
     time.sleep(0.5)
-    return camera.fresh_frame(timeout=3.0)
+    photo = camera.fresh_frame(timeout=3.0)
+    if photo is None:
+        print("  The camera gave no picture.")
+    return photo
 
 
 def _find_board(arm, camera):
@@ -43,7 +55,6 @@ def _find_board(arm, camera):
     input("  (empty board) Enter: ")
     photo = _photo(arm, camera)
     if photo is None:
-        print("  The camera gave no picture.")
         return None
     corners = board_finder.find_board(photo)
     if corners is None:
@@ -106,7 +117,7 @@ def _shuffle(arm, camera, frame, corners, position, n, session, saved):
         position[dst], position[src] = position[src], "."
         photo = _photo(arm, camera)
         if photo is None:
-            print("  The camera gave no picture -- stopping.")
+            print("  Stopping.")
             break
         collect.save_photo(photo, position, corners, arm.home_pose[:4], session)
         saved[0] += 1
@@ -124,7 +135,6 @@ def _read(arm, camera, corners):
         return
     photo = _photo(arm, camera)
     if photo is None:
-        print("  The camera gave no picture.")
         return
     result = clf.classify(board_view.square_crops(photo, corners))
     sign = {"empty": ".", "white": "W", "black": "B"}
@@ -174,7 +184,6 @@ def run(arm, camera, frame):
             continue
         photo = _photo(arm, camera)
         if photo is None:
-            print("  The camera gave no picture.")
             continue
         collect.save_photo(photo, position, corners, arm.home_pose[:4], session)
         saved[0] += 1

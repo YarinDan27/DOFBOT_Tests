@@ -207,7 +207,7 @@ def _find_stages(start4, target4, zone):
 
 def _in_range(angles):
     for sid in (1, 2, 3, 4):
-        low, high = config.JOINT_RANGE[sid]
+        low, high = config.COMMAND_RANGE[sid]        # poses the servos can be sent to
         if not low <= angles[sid - 1] <= high:
             return False
     return True
@@ -271,7 +271,7 @@ def search_path(start4, target4, zone, seed=1, time_limit=None, step=12.0):
         if rng.random() < 0.1:
             q = list(trees[b][0][0])
         else:
-            q = [rng.uniform(*config.JOINT_RANGE[sid]) for sid in (1, 2, 3, 4)]
+            q = [rng.uniform(*config.COMMAND_RANGE[sid]) for sid in (1, 2, 3, 4)]
         i = extend(trees[a], q)
         if i is not None:
             q_new = trees[a][0][i]

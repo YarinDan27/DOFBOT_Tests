@@ -7,9 +7,9 @@ and saved to calibration/board_arm.json.
 """
 import os
 
-VERSION = "2.7.1"
-VERSION_NOTE = ("joints past 0-180 are fine: read up to 90 past, and a silent one goes "
-                "by where it was sent, slowly -- no stop; python3 -m learn trains on the PC")
+VERSION = "2.7.2"
+VERSION_NOTE = ("commands stay inside 0-180 (the servos stop there anyway); a slow joint "
+                "is waited for, not stopped; home is the same every time; --servo-test")
 
 # ---------- folders ----------
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +57,14 @@ JOINT_RANGE = {
 # scale (a joint near the end of its range has nowhere left to go mid-move).
 # The full JOINT_RANGE is used only when nothing comfortable works.
 JOINT_COMFORT = {2: (5.0, 175.0), 3: (5.0, 175.0), 4: (5.0, 175.0)}
+# What a servo can be TOLD (v2.7.2). A joint pushed by hand past 0-180 still
+# reports (JOINT_RANGE above), but a command past 0-180 only gets it to the end
+# of its scale: on 1 Nov the wrist was sent -9 and stayed at 1, and every such
+# move ended in a false "stopped short". So every command is clamped to this,
+# a move counts as arrived when it reaches the clamp, and the planner never
+# picks a pose outside it. Measure with  python3 run.py --servo-test.
+COMMAND_RANGE = {1: (0.0, 180.0), 2: (0.0, 180.0), 3: (0.0, 180.0), 4: (0.0, 180.0),
+                 5: (0.0, 180.0), 6: (0.0, 180.0)}
 
 # ---------- speeds (bigger = faster) ----------
 SPEED_SLOW = 300
@@ -73,8 +81,8 @@ CLAW_STALL_GAP = 12
 # ---------- poses ----------
 # Resting: shoulder leaning back over the electronics, elbow and wrist at 0,
 # so the claw (and camera) faces forward over the board, toward the player.
-# The shoulder stays just past the end of its scale: it can still report there.
-POSE_REST = [90, 185, 0, 0, 90, CLAW_OPEN]
+# (v2.7.2: shoulder 180, not 185 -- a servo can't be sent past 180.)
+POSE_REST = [90, 180, 0, 0, 90, CLAW_OPEN]
 # Hovering high over the board. Straight-line moves have to start from a pose
 # the "gripper pointing down" math can express; resting is not one, so moves
 # to the board go through here.
@@ -139,6 +147,29 @@ READ_MISS_LIMIT = 3         # reads in a row that may get no answer mid-move bef
                            # holds still (one miss just pauses the move for a tick)
 GATE_STEP_DEG = 15.0       # no single command may move servos 1-4 further than this from
                            # where they were last sent (moves go in steps of a few degrees)
+STREAM_MS = 150            # each streamed target is sent with this much time to get there
+WRITE_MODE = "write6"      # "write6": all six servos in ONE bus message per tick (how
+                           # Yahboom's own driver does it); "single": a message per servo,
+                           # WRITE_GAP_S apart. --servo-test measures which follows better.
+WRITE_GAP_S = 0.005
+
+# ---------- waiting for a slow joint instead of stopping (v2.7.2) ----------
+# 2.5-2.7 stopped whenever a joint fell ~10 degrees behind. Real servos fall
+# behind for a moment all the time (a heavy pose, a slow start), far from
+# anything they could hit. Now the move WAITS for a joint that's behind (its
+# clock stops, so every joint stays on the path that was checked), and only
+# stops if the joint doesn't catch up: quickly near the board or anything
+# solid, after a longer wait out in the open.
+LAG_WAIT_DEG = 6.0         # a joint this far behind its command: the move waits for it
+NEAR_PATIENCE_S = 0.3      # near the board or something solid: not caught up by then = stop
+FREE_PATIENCE_S = 1.5      # plenty of room: wait this long (it's the servo, not a collision)
+FREE_MM = 30.0             # "plenty of room": every part of the arm this far from anything
+                           # solid...
+FREE_BOARD_MM = 20.0       # ...this far above the board's no-swing zone (CLEAR_MM)...
+FREE_MM_BOX_GUESS = 90.0   # ...and, behind the base, this far above the electronics while that
+                           # box is only the estimate in this file (not measured with menu 8)
+NUDGE_MAX_DEG = 5.0        # a joint resting short of its target with plenty of room around it
+                           # is told a little further (sag, gear play) -- at most this much
 
 # ---------- read-back checks (robot/arm.py) ----------
 STALL_DEG = 10.0           # a joint this far behind AND no longer following its
@@ -149,6 +180,14 @@ SETTLE_DEG = 8.0           # at the end of a move every joint must be this close
                            # servo sags a few degrees short of its target)
 SETTLE_STILL_DEG = 1.5     # ...and before the next move starts, it has stopped moving
                            # (changed less than this since the last read)
+SETTLE_WAIT_S = 0.8        # how long the end of a move may take near things (FREE_PATIENCE_S
+                           # out in the open); it's re-sent meanwhile, in case a command got lost
+POWER_ON_PAST_DEG = 10.0   # a joint further than this past 0-180 would jump when power comes
+                           # on (it can only be told 0-180): move it back by hand first
+HOME_TOL_DEG = 1.0         # at home (and before every training photo) every joint is within
+                           # this of the home pose -- small nudges until it is (up to 3)
+BACKLASH_APPROACH_DEG = 4.0   # the base always arrives at home from the same side (from this
+                           # far below), so gear play can't leave it a few degrees off
 IMPOSSIBLE_BELOW_MM = 40.0 # readings that put the arm this far under the board = a servo
                            # is misreporting: don't move at all
 WIDE_READ_DEG = 90.0       # joints 1-4 report up to this far past their 0-180 scale

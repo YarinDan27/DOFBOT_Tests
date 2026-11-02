@@ -131,7 +131,7 @@ def _tip_target(angles, direction, mm):
 def step_joint(arm, angles, sid, sign, deg):
     target = list(angles)
     target[sid - 1] = angles[sid - 1] + sign * deg
-    low, high = config.JOINT_RANGE[sid]
+    low, high = config.COMMAND_RANGE[sid]          # as far as a servo can be sent
     if not low <= target[sid - 1] <= high:
         return None, "the %s is at the end of its range (%.0f-%.0f)" % (SERVO_NAMES[sid], low, high)
     if sid >= 5:

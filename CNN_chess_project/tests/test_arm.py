@@ -162,12 +162,21 @@ print("\n--- 5. a joint just past the end of its scale: power on in place, then 
 Arm_Lib.reset([90, 90, 90, 185, 90, 150])     # wrist past 180: reads via the wide read
 before = dict(Arm_Lib.STATE["pos"])
 a = arm_mod.Arm()
-check("switches on without moving (no jump)", a.powered and all(
-    abs(Arm_Lib.STATE["pos"][i] - before[i]) < 1.5 for i in range(1, 5)))
+check("switches on in place -- the wrist only eases back to 180, the end of what it can be "
+      "told (v2.7.2)", a.powered and all(
+          abs(Arm_Lib.STATE["pos"][i] - min(before[i], 180.0)) < 1.5 for i in range(1, 5)))
 ANSWERS[:] = [("Enter = go home slowly", "", None)]
 a.start_up()
 check("then goes home", at(config.POSE_REST))
 check("without touching anything", Arm_Lib.STATE["contacts"] == 0)
+
+print("\n--- 5b0. a joint far past 0-180 (it would jump at power-on): power stays off ---")
+Arm_Lib.reset([90, 90, 90, 210, 90, 150])
+Arm_Lib.STATE["torque"] = False
+a = arm_mod.Arm()
+check("doesn't switch on (the wrist would jump 30 degrees)", not a.powered
+      and arm_mod.power_on_problem(a.read_angles(3)) is not None,
+      str(arm_mod.power_on_problem(a.read_angles(3))))
 
 print("\n--- 5a. tonight's pose: left limp at a2, elbow at 4 ---")
 Arm_Lib.reset([118, 79, 4, 26, 89, 166])

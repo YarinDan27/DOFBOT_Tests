@@ -196,6 +196,18 @@ class World(safety.Zone):
                     best = (m, link, ob.name, point)
         return best
 
+    def margins(self, angles):
+        """Like margin(), but for each obstacle on its own: {name: mm}."""
+        out = {}
+        for link, point, radius in body.sample_points(angles, SPACING):
+            for ob in self.obstacles:
+                if (link, ob.name) in EXEMPT:
+                    continue
+                m = ob.distance(point) - radius - SPACING / 2.0 - ob.clear
+                if m < out.get(ob.name, float("inf")):
+                    out[ob.name] = m
+        return out
+
     def body_problem(self, angles):
         """Text if the arm's shape is too close to something solid, else None."""
         m, link, ob, _ = self.margin(angles)

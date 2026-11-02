@@ -57,14 +57,15 @@ def forward(servo1, servo2, servo3, servo4):
 
 def within_limits(servos, comfort=False):
     """
-    Inside what each servo can do (config.JOINT_RANGE). Not a safety check:
-    robot/world.py decides whether the arm's shape is clear. comfort=True:
-    inside config.JOINT_COMFORT instead -- well within the servos' 0-180
+    A pose the servos can be SENT to (config.COMMAND_RANGE, 0-180: a command
+    past that only gets a joint to the end of its scale, v2.7.2). Not a
+    safety check: robot/world.py decides whether the arm's shape is clear.
+    comfort=True: inside config.JOINT_COMFORT instead -- well within the
     scale, where the robot plans its own moves when it can.
     """
-    ranges = config.JOINT_COMFORT if comfort else config.JOINT_RANGE
+    ranges = config.JOINT_COMFORT if comfort else config.COMMAND_RANGE
     for sid, value in servos.items():
-        lo, hi = ranges.get(sid, config.JOINT_RANGE[sid])
+        lo, hi = ranges.get(sid, config.COMMAND_RANGE[sid])
         if not (lo <= value <= hi):
             return False
     return True

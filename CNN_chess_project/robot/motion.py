@@ -118,6 +118,19 @@ class StallWatch(object):
         cap = config.SAG_MAX_DEG
         self.offset[sid] = max(-cap, min(cap, float(offset)))
 
+    def lag(self, sid, target, got):
+        """
+        Degrees behind (v2.7.2): from the newer of the last two commands it's
+        closer to -- a servo answers a moment late -- with or without the sag
+        it started with, whichever is less (the arm leaning the other way
+        makes a joint sag the other way). Kept in the history like update().
+        """
+        off = self.offset.get(sid, 0.0)
+        h = self.hist.setdefault(sid, [])
+        h.append((float(target), float(got)))
+        del h[:-(self.WINDOW + 1)]
+        return min(min(abs(got - t), abs(got - t - off)) for t, _ in h[-2:])
+
     def update(self, sid, target, got):
         """
         Returns (stalled, degrees behind the latest command). A real servo

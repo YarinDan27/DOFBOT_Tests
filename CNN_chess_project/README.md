@@ -11,6 +11,7 @@ cd ~/YDscripts/CNN_chess_project && python3 run.py
 ```bash
 python3 run.py --sim      # the same program on a simulated arm: no arm needed (try it on your PC)
 python3 run.py --check    # reads the servos and says what it sees; moves nothing
+python3 run.py --servo-test   # measures how the servos really behave (moves a little, ~1 min)
 python3 -m viz.export     # writes arm_view.html: the 3D view of your calibration, to open anywhere
 python3 -m viz.urdf       # writes dofbot_chess.urdf: the same arm model, for RViz or MuJoCo
 ```

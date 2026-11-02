@@ -79,9 +79,11 @@ check("shoulder 190 + elbow 180 + wrist 180 is refused", m < 0, "%s into the %s"
 problem = W.body_problem([90, 180, 120, 90])
 check("folding the forearm down over the electronics is refused, saying what hits",
       problem is not None and "electronics" in problem, problem or "")
-check("the old per-servo limits are gone: shoulder 185, elbow -30 are inside their range",
-      kinematics.within_limits({2: 185.0, 3: -30.0})
-      and not kinematics.within_limits({2: config.JOINT_RANGE[2][1] + 1.0}))
+check("no per-servo limits: a joint read at 185 or -30 is a pose like any other",
+      arm_mod.limit_problem([90.0, 185.0, -30.0, 90.0]) is None)
+check("but the planner only picks what a servo can be told (0-180, v2.7.2)",
+      kinematics.within_limits({2: 180.0, 3: 0.0})
+      and not kinematics.within_limits({2: 185.0}) and not kinematics.within_limits({3: -5.0}))
 check("upright and ready are clear",
       W.margin([90, 90, 90, 90])[0] > 20 and W.margin(config.POSE_READY)[0] > 20)
 check("the shape has five parts incl. the camera bar",

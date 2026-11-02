@@ -7,6 +7,8 @@ DOFBOT chess -- start here:
     python3 run.py --sim     the same program on a simulated arm: no arm needed
                              (try it on your PC; watch it in the 3D view)
     python3 run.py --check   reads the servos and says what it sees; moves nothing
+    python3 run.py --servo-test   measures how the servos really behave (moves a
+                             little, well above the board) -- paste what it prints
 
 No questions at start-up. It switches the arm's power on right where the arm
 is (no jump), says where the claw is, and -- unless you press Ctrl-C within
@@ -58,7 +60,7 @@ if SIM:
 
 from robot import kinematics                                   # noqa: E402
 from robot.arm import (Arm, ArmBlocked, OutOfReach, SERVO_NAMES, UnsafeMove,  # noqa: E402
-                       other_arm_programs)
+                       other_arm_programs, power_on_problem)
 from robot.board_frame import FILES, BoardFrame, is_square     # noqa: E402
 from sessions import electronics, jog, look_pose, self_test, teach  # noqa: E402
 
@@ -142,6 +144,10 @@ def board_map(frame, results, colour=None, zone=None):
 def banner():
     print("\n=== DOFBOT Chess v%s%s ===" % (config.VERSION, "  (SIMULATED ARM)" if SIM else ""))
     print("Last fix: %s" % config.VERSION_NOTE)
+    print("Ctrl-C stops the arm right where it is, any time.")
+    if time.localtime().tm_year < 2025:
+        print("(This computer's clock says %d -- photos and logs get the wrong dates. "
+              "Fix: sudo timedatectl set-ntp true)" % time.localtime().tm_year)
 
 
 class Tee(object):
@@ -300,8 +306,11 @@ def power_on(arm):
             print("  Power is on -- the arm holds itself where it is.")
             return True
         angles = arm.read_angles(samples=1, ids=(1, 2, 3, 4))
-        problem = arm.reading_problem(angles) or "a joint didn't answer"
-        print("\n  Power isn't on yet: %s." % problem)
+        problem = arm.reading_problem(angles) or power_on_problem(angles) or \
+            "a joint didn't answer"
+        silent = [s for s in (1, 2, 3, 4) if angles[s - 1] is None]
+        raw = (" [register %s]" % arm.last_raw.get(silent[0])) if silent else ""
+        print("\n  Power isn't on yet: %s.%s" % (problem, raw))
         print("  Move it by hand; it powers on by itself when it can (long beep).")
         if not teach.release(arm):
             return False
@@ -349,12 +358,19 @@ def do(arm, action, *args, **kwargs):
 
 
 def back_home(arm):
-    """Home: rises straight up first if it's low over the board, then a planned move."""
-    arm.go_home()
-    print("  Home.")
+    """Home: rises straight up first if it's low over the board, then a planned move,
+    then exactly there (the same view for the camera every time)."""
+    print("  Going home...", flush=True)
+    off = arm.go_home()
+    if off is not None and off > 2 * config.HOME_TOL_DEG and arm.home_pose[:4] != \
+            list(config.POSE_REST[:4]):
+        print("  Home (%.1f degrees off -- photos from here may be shifted)." % off)
+    else:
+        print("  Home.")
 
 
 def rest(arm):
+    print("  Folding back to rest...", flush=True)
     arm.move_to_pose(config.POSE_REST)
     print("  Resting.")
 
@@ -583,6 +599,35 @@ MENU = [("1", "Teach the board", "hands-free at the arm -- a pawn on each square
         ("0", "Rest and quit", "folds back to rest, then quits (q = quit, stay put)")]
 
 
+def servo_test():
+    """--servo-test: measures the real servos (sessions/servo_test.py). Moves a little."""
+    from sessions import servo_test as st
+    banner()
+    print("Servo test: the arm goes upright and moves each joint a little, well above the")
+    print("board. Keep clear of it. Takes about a minute. Ctrl-C stops it.\n")
+    stop_other_programs()
+    if SIM:
+        import Arm_Lib
+        Arm_Lib.use_servo_model()
+        Arm_Lib.reset(config.POSE_REST)
+    try:
+        arm = Arm(power_on=False)
+    except Exception as e:
+        print("Can't talk to the arm: %s" % e)
+        return
+    with arm:
+        arm.interactive = False
+        arm.skip_park = True
+        arm.set_board(BoardFrame.load())
+        try:
+            st.run(arm, power_on)
+        except KeyboardInterrupt:
+            print("\n  Stopped. The arm is holding still where it is.")
+        except ArmBlocked as e:
+            report_block(e)
+        print("Done. The arm holds where it is; python3 run.py takes it home.")
+
+
 def check():
     """--check: says what the arm reports and what the model makes of it. Moves nothing."""
     banner()
@@ -702,6 +747,8 @@ if __name__ == "__main__":
     try:
         if "--check" in sys.argv:
             check()
+        elif "--servo-test" in sys.argv:
+            servo_test()
         else:
             main()
     except KeyboardInterrupt:

@@ -16,6 +16,10 @@ It behaves like the real arm in the ways that matter for safety:
     sag under load, noisy whole-degree readings and the odd missed read
     (servo_model.py, after Microduck's actuator models). Off by default:
     then a servo jumps to its target the moment it's told.
+  * (v2.7.2) like the real servos (1 Nov: the wrist was sent -9 and stayed at
+    1), a command past 0-180 only gets a servo to the end of its scale
+    (CLAMP); there's Arm_serial_servo_write6, and every write is counted
+    (WRITES) so tests can see how the program talks to the bus
   * run.py --sim uses this file as the arm, so you can try the program without one
 """
 import random
@@ -31,6 +35,8 @@ SILENT = set()          # servo ids that never answer
 BOARD = {"z": -13.0, "x": (-120.0, 120.0), "y": (90.0, 290.0)}   # the real board
 TABLE_Z = -16.0
 MODEL = {"servos": None}  # servo_model.ServoModel, or None = servos teleport
+CLAMP = {"on": True}      # commands past 0-180 stop at the end of the scale
+WRITES = {"single": 0, "write6": 0}
 
 
 def use_servo_model(params=None, seed=0):
@@ -189,8 +195,22 @@ class Arm_Device:
         STATE["torque"] = bool(onoff)
 
     def Arm_serial_servo_write(self, servo_id, angle, duration_ms):
+        WRITES["single"] += 1
+        self._write(servo_id, angle, duration_ms)
+
+    def Arm_serial_servo_write6(self, s1, s2, s3, s4, s5, s6, duration_ms):
+        if s1 > 180 or s2 > 180 or s3 > 180 or s4 > 180 or s5 > 270 or s6 > 180:
+            print("out of range")          # what the real one does: prints, sends nothing
+            return
+        WRITES["write6"] += 1
+        for sid, angle in enumerate((s1, s2, s3, s4, s5, s6), start=1):
+            self._write(sid, angle, duration_ms)
+
+    def _write(self, servo_id, angle, duration_ms):
         if not STATE["torque"]:
             return
+        if CLAMP["on"] and servo_id <= 4:
+            angle = max(0.0, min(180.0, float(angle)))
         if servo_id > 4:
             STATE["pos"][servo_id] = float(angle)
             return
